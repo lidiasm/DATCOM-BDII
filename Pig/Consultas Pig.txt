@@ -1,0 +1,12 @@
+hdfs dfs -mkdir FirewallDataInput
+hdfs dfs -put Downloads/log2.csv FirewallDataInput
+hdfs dfs -ls FirewallDataInput
+firewalldata = load 'FirewallDataInput/log2.csv' using PigStorage(',') AS (SourcePort:int, DestinationPort:int, NatSourcePort:int, NatDestinationPort:int, Action:chararray, Bytes:int, BytesSent:int, BytesReceived:int, Packets:int, ElapsedTime_int, PktsSent:int, PktsReceived:int);
+store firewalldata into 'firewallResults/originalData' using PigStorage(',');
+hdfs dfs -ls firewallResults/originalData
+hdfs dfs -cat firewallResults/originalData/part-m-00000 | less
+denied_actions = filter firewalldata by Action == 'deny';
+denied_actions_by_ports = group denied_actions by (SourcePort, DestinationPort);
+sum_pkts_bytes = foreach denied_actions_by_ports generate group, SUM(denied_actions.BytesSent), SUM(denied_actions.BytesReceived), SUM(denied_actions.PktsSent), SUM(denied_actions.PktsReceived);
+store sum_pkts_bytes into 'firewallResults/BytesAndPktsCalculations';
+hdfs dfs -cat firewallResults/BytesAndPktsCalculations/part-r-00000 | less
