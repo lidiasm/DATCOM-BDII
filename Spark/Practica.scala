@@ -84,8 +84,19 @@ object Practica {
       predictions("label") === predictions(predColumn)).count())
   }
 
-  def main(arg: Array[String]): Unit = {
-    // Iniciamos una nueva sesión de Spark
+  /**
+   * Función que aplica un algoritmo de preprocesamiento (ROS, RUS o SMOTE)
+   * para balancear el conjunto de entrenamiento y construir un clasificador
+   * utilizando el algoritmo Árboles de Decisión. Finalmente se evalúa su
+   * calidad sobre los conjuntos de entrenamiento y test calculando el número
+   * de muestras positivas y negativas bien clasificadas.
+   * @param trainPath ruta hacia el fichero de entrenamiento
+   * @param testPath ruta hacia el fichero de test
+   * @param balAlg algoritmo de balanceo de clases a aplicar sobre el conjunto
+   *               de entrenamiento desbalanceado. Opciones: ROS, RUS o ASMOTE.
+   */
+  def applyDecisionTrees(trainPath: String, testPath: String, balAlg: String): Unit = {
+    // Inicia una nueva sesión de Spark
     val spark = SparkSession.builder()
       .master("local[4]")
       .appName("SparkApp")
@@ -96,7 +107,7 @@ object Practica {
       .format("csv")
       .option("inferSchema", true)
       .option("header", false)
-      .load(trainLocalPath) //trainClusterPath
+      .load(trainPath)
     // Modificamos el nombre de la variable clase
     var train = dfTrain.withColumnRenamed("_c18", "label")
 
@@ -105,38 +116,41 @@ object Practica {
       .format("csv")
       .option("inferSchema", true)
       .option("header", false)
-      .load(testLocalPath) //testClusterPath
-    // Modificamos el nombre de la variable clase
+      .load(testPath)
+    // Modifica el nombre de la variable de clase
     var test = dfTest.withColumnRenamed("_c18", "label")
 
     // Une las variables de entrada en una columna llamada 'features'
     val assembler = new VectorAssembler()
       .setInputCols(dfTrain.columns.init)
       .setOutputCol("features")
+
     // Conjunto de entrenamiento y test en caché para mayor velocidad
     train = assembler.transform(train).repartition(100).cache()
     test = assembler.transform(test).repartition(100).cache()
 
     /*---------------------------------------------------------------*/
-    // ALGORITMO DE BALANCEO DE CLASES: ROS
-    val balancedTrain = ROS(train.select("label", "features"),1.0)
-    println("DISTRIBUCIÓN DE CLASES TRAS ROS")
-    balancedTrain.groupBy("label").count().show
-    /*---------------------------------------------------------------*/
-    // ALGORITMO DE BALANCEO DE CLASES: RUS
-    val balancedTrain = RUS(train.select("label", "features"))
-    println("DISTRIBUCIÓN DE CLASES TRAS RUS")
-    balancedTrain.groupBy("label").count().show
-    /*---------------------------------------------------------------*/
-    // ALGORITMO DE BALANCEO DE CLASES: ASMOTE
-    // Convertimos la variable clase en entera 
-    train = train.withColumn("label", col("label").cast(IntegerType))
-    test = test.withColumn("label", col("label").cast(IntegerType))
-    // Balanceo de clases con semilla para resultados reproducibles
-    val asmote = new ASMOTE().setK(5).setPercOver(5).setSeed(1000)
-    val balancedTrain = asmote.transform(train.select("label", "features"))
-    println("DISTRIBUCIÓN DE CLASES TRAS ASMOTE")
-    balancedTrain.groupBy("label").count().show
+    // Almacena el dataframe balanceado resultante
+    var balancedTrain: DataFrame = null
+    // Aplica el algoritmo de balanceo de clases seleccionado
+    balAlg match {
+      case "ROS" =>
+        balancedTrain = ROS(train.select("label", "features"),1.0)
+        println("\nDISTRIBUCIÓN DE CLASES TRAS ROS")
+        balancedTrain.groupBy("label").count().show
+
+      case "RUS" =>
+        balancedTrain = RUS(train.select("label", "features"))
+        println("\nDISTRIBUCIÓN DE CLASES TRAS RUS")
+        balancedTrain.groupBy("label").count().show
+
+      case "ASMOTE" =>
+        // Balanceo de clases con semilla para resultados reproducibles
+        val asmote = new ASMOTE().setK(5).setPercOver(5).setSeed(1000)
+        balancedTrain = asmote.transform(train.select("label", "features"))
+        println("\nDISTRIBUCIÓN DE CLASES TRAS ASMOTE")
+        balancedTrain.groupBy("label").count().show
+    }
     /*---------------------------------------------------------------*/
 
     /*---------------------------------------------------------------*/
@@ -151,17 +165,18 @@ object Practica {
       .setOutputCol("indexedFeatures")
       .fit(balancedTrain)
 
-    // Construye el clasificador
+    // Construye el clasificador con Árboles de Decisión
     val classifierSettings = new DecisionTreeClassifier()
       .setLabelCol("indexedLabel")
       .setFeaturesCol("indexedFeatures")
+
     // Traduce las etiquetas predichas al rango de valores del dataset
     val labelConverter = new IndexToString()
       .setInputCol("prediction")
       .setOutputCol("predictedLabel")
       .setLabels(labelIndexer.labels)
 
-    // Pipeline con el procedimiento
+    // Pipeline con todas las actividades
     val pipeline = new Pipeline()
       .setStages(Array(labelIndexer, featureIndexer, classifierSettings, labelConverter))
 
@@ -176,5 +191,130 @@ object Practica {
     println("EVALUACIÓN SOBRE TEST:")
     calculateQualityMetrics(testPredictions, "predictedLabel")
     /*---------------------------------------------------------------*/
+  }
+
+  /**
+   * Función que aplica un algoritmo de preprocesamiento (ROS, RUS o SMOTE)
+   * para balancear el conjunto de entrenamiento y construir un clasificador
+   * utilizando el algoritmo Random Forest. Finalmente se evalúa su calidad
+   * sobre los conjuntos de entrenamiento y test calculando el número
+   * de muestras positivas y negativas bien clasificadas.
+   * @param trainPath ruta hacia el fichero de entrenamiento
+   * @param testPath ruta hacia el fichero de test
+   * @param balAlg algoritmo de balanceo de clases a aplicar sobre el conjunto
+   *               de entrenamiento desbalanceado. Opciones: ROS, RUS o ASMOTE.
+   */
+  def applyRandomForest(trainPath: String, testPath: String, balAlg: String): Unit = {
+    // Inicia una nueva sesión de Spark
+    val spark = SparkSession.builder()
+      .master("local[4]")
+      .appName("SparkApp")
+      .getOrCreate()
+
+    // Lectura del conjunto de entrenamiento
+    val dfTrain = spark.read
+      .format("csv")
+      .option("inferSchema", true)
+      .option("header", false)
+      .load(trainPath)
+    // Modificamos el nombre de la variable clase
+    var train = dfTrain.withColumnRenamed("_c18", "label")
+
+    // Lectura del conjunto de test
+    val dfTest = spark.read
+      .format("csv")
+      .option("inferSchema", true)
+      .option("header", false)
+      .load(testPath)
+    // Modifica el nombre de la variable de clase
+    var test = dfTest.withColumnRenamed("_c18", "label")
+
+    // Une las variables de entrada en una columna llamada 'features'
+    val assembler = new VectorAssembler()
+      .setInputCols(dfTrain.columns.init)
+      .setOutputCol("features")
+
+    // Conjunto de entrenamiento y test en caché para mayor velocidad
+    train = assembler.transform(train).repartition(100).cache()
+    test = assembler.transform(test).repartition(100).cache()
+
+    /*---------------------------------------------------------------*/
+    // Almacena el dataframe balanceado resultante
+    var balancedTrain: DataFrame = null
+    // Aplica el algoritmo de balanceo de clases seleccionado
+    balAlg match {
+      case "ROS" =>
+        balancedTrain = ROS(train.select("label", "features"),1.0)
+        println("\nDISTRIBUCIÓN DE CLASES TRAS ROS")
+        balancedTrain.groupBy("label").count().show
+
+      case "RUS" =>
+        balancedTrain = RUS(train.select("label", "features"))
+        println("\nDISTRIBUCIÓN DE CLASES TRAS RUS")
+        balancedTrain.groupBy("label").count().show
+
+      case "ASMOTE" =>
+        // Balanceo de clases con semilla para resultados reproducibles
+        val asmote = new ASMOTE().setK(5).setPercOver(5).setSeed(1000)
+        balancedTrain = asmote.transform(train.select("label", "features"))
+        println("\nDISTRIBUCIÓN DE CLASES TRAS ASMOTE")
+        balancedTrain.groupBy("label").count().show
+    }
+    /*---------------------------------------------------------------*/
+
+    /*---------------------------------------------------------------*/
+    // ALGORITMO DE CLASIFICACIÓN: ÁRBOLES DE DECISIÓN
+    // Indexa las variables del dataset
+    val labelIndexer = new StringIndexer()
+      .setInputCol("label")
+      .setOutputCol("indexedLabel")
+      .fit(balancedTrain)
+    val featureIndexer = new VectorIndexer()
+      .setInputCol("features")
+      .setOutputCol("indexedFeatures")
+      .fit(balancedTrain)
+
+    // Construye el clasificador con Random Forest
+    val classifierSettings = new RandomForestClassifier()
+      .setLabelCol("indexedLabel")
+      .setFeaturesCol("indexedFeatures")
+
+    // Traduce las etiquetas predichas al rango de valores del dataset
+    val labelConverter = new IndexToString()
+      .setInputCol("prediction")
+      .setOutputCol("predictedLabel")
+      .setLabels(labelIndexer.labels)
+
+    // Pipeline con todas las actividades
+    val pipeline = new Pipeline()
+      .setStages(Array(labelIndexer, featureIndexer, classifierSettings, labelConverter))
+
+    // Entrenamiento del modelo
+    val model = pipeline.fit(balancedTrain)
+    // Predicciones y evaluación sobre train
+    val trainPredictions = model.transform(balancedTrain).select("label", "predictedLabel")
+    println("EVALUACIÓN SOBRE TRAIN:")
+    calculateQualityMetrics(trainPredictions, "predictedLabel")
+    // Predicciones y evaluación sobre test
+    val testPredictions = model.transform(test).select("label", "predictedLabel")
+    println("EVALUACIÓN SOBRE TEST:")
+    calculateQualityMetrics(testPredictions, "predictedLabel")
+    /*---------------------------------------------------------------*/
+  }
+
+  def main(arg: Array[String]): Unit = {
+    // Árboles de Decisión + ROS
+    applyDecisionTrees(trainLocalPath, testLocalPath, "ROS")
+    // Árboles de Decisión + RUS
+    applyDecisionTrees(trainLocalPath, testLocalPath, "RUS")
+    // Árboles de Decisión + ASMOTE
+    applyDecisionTrees(trainLocalPath, testLocalPath, "ASMOTE")
+
+    // Random Forest + ROS
+    applyRandomForest(trainLocalPath, testLocalPath, "ROS")
+    // Random Forest + RUS
+    applyRandomForest(trainLocalPath, testLocalPath, "RUS")
+    // Random Forest + ASMOTE
+    applyRandomForest(trainLocalPath, testLocalPath, "ASMOTE")
   }
 }
