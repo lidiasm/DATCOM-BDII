@@ -154,7 +154,7 @@ object Practica {
     /*---------------------------------------------------------------*/
 
     /*---------------------------------------------------------------*/
-    // ALGORITMO DE CLASIFICACIÓN: ÁRBOLES DE DECISIÓN
+    // ALGORITMO DE CLASIFICACIÓN
     // Indexa las variables del dataset
     val labelIndexer = new StringIndexer()
       .setInputCol("label")
@@ -263,7 +263,7 @@ object Practica {
     /*---------------------------------------------------------------*/
 
     /*---------------------------------------------------------------*/
-    // ALGORITMO DE CLASIFICACIÓN: ÁRBOLES DE DECISIÓN
+    // ALGORITMO DE CLASIFICACIÓN
     // Indexa las variables del dataset
     val labelIndexer = new StringIndexer()
       .setInputCol("label")
@@ -302,6 +302,117 @@ object Practica {
     /*---------------------------------------------------------------*/
   }
 
+  /**
+   * Función que aplica un algoritmo de preprocesamiento (ROS, RUS o SMOTE)
+   * para balancear el conjunto de entrenamiento y construir un clasificador
+   * utilizando el algoritmo Factorization Machines. Finalmente se evalúa su calidad
+   * sobre los conjuntos de entrenamiento y test calculando el número
+   * de muestras positivas y negativas bien clasificadas.
+   * @param trainPath ruta hacia el fichero de entrenamiento
+   * @param testPath ruta hacia el fichero de test
+   * @param balAlg algoritmo de balanceo de clases a aplicar sobre el conjunto
+   *               de entrenamiento desbalanceado. Opciones: ROS, RUS o ASMOTE.
+   */
+  def applyFactorizationMachines(trainPath: String, testPath: String, balAlg: String): Unit = {
+    // Inicia una nueva sesión de Spark
+    val spark = SparkSession.builder()
+      .master("local[4]")
+      .appName("SparkApp")
+      .getOrCreate()
+
+    // Lectura del conjunto de entrenamiento
+    val dfTrain = spark.read
+      .format("csv")
+      .option("inferSchema", true)
+      .option("header", false)
+      .load(trainPath)
+    // Modificamos el nombre de la variable clase
+    var train = dfTrain.withColumnRenamed("_c18", "label")
+
+    // Lectura del conjunto de test
+    val dfTest = spark.read
+      .format("csv")
+      .option("inferSchema", true)
+      .option("header", false)
+      .load(testPath)
+    // Modifica el nombre de la variable de clase
+    var test = dfTest.withColumnRenamed("_c18", "label")
+
+    // Une las variables de entrada en una columna llamada 'features'
+    val assembler = new VectorAssembler()
+      .setInputCols(dfTrain.columns.init)
+      .setOutputCol("features")
+
+    // Conjunto de entrenamiento y test en caché para mayor velocidad
+    train = assembler.transform(train).repartition(100).cache()
+    test = assembler.transform(test).repartition(100).cache()
+
+    /*---------------------------------------------------------------*/
+    // Almacena el dataframe balanceado resultante
+    var balancedTrain: DataFrame = null
+    // Aplica el algoritmo de balanceo de clases seleccionado
+    balAlg match {
+      case "ROS" =>
+        balancedTrain = ROS(train.select("label", "features"),1.0)
+        println("\nDISTRIBUCIÓN DE CLASES TRAS ROS")
+        balancedTrain.groupBy("label").count().show
+
+      case "RUS" =>
+        balancedTrain = RUS(train.select("label", "features"))
+        println("\nDISTRIBUCIÓN DE CLASES TRAS RUS")
+        balancedTrain.groupBy("label").count().show
+
+      case "ASMOTE" =>
+        // Balanceo de clases con semilla para resultados reproducibles
+        val asmote = new ASMOTE().setK(5).setPercOver(5).setSeed(1000)
+        balancedTrain = asmote.transform(train.select("label", "features"))
+        println("\nDISTRIBUCIÓN DE CLASES TRAS ASMOTE")
+        balancedTrain.groupBy("label").count().show
+    }
+    /*---------------------------------------------------------------*/
+
+    /*---------------------------------------------------------------*/
+    // ALGORITMO DE CLASIFICACIÓN
+    // Indexa las variables del dataset
+    val labelIndexer = new StringIndexer()
+      .setInputCol("label")
+      .setOutputCol("indexedLabel")
+      .fit(balancedTrain)
+    // Escala las características en un rango [0,1]
+    val featureIndexer = new MinMaxScaler()
+      .setInputCol("features")
+      .setOutputCol("indexedFeatures")
+      .fit(balancedTrain)
+
+    // Construye el clasificador con Factorization Machines
+    val classifierSettings = new FMClassifier()
+      .setLabelCol("indexedLabel")
+      .setFeaturesCol("indexedFeatures")
+      .setStepSize(0.001)
+
+    // Traduce las etiquetas predichas al rango de valores del dataset
+    val labelConverter = new IndexToString()
+      .setInputCol("prediction")
+      .setOutputCol("predictedLabel")
+      .setLabels(labelIndexer.labels)
+
+    // Pipeline con todas las actividades
+    val pipeline = new Pipeline()
+      .setStages(Array(labelIndexer, featureIndexer, classifierSettings, labelConverter))
+
+    // Entrenamiento del modelo
+    val model = pipeline.fit(balancedTrain)
+    // Predicciones y evaluación sobre train
+    val trainPredictions = model.transform(balancedTrain).select("label", "predictedLabel")
+    println("EVALUACIÓN SOBRE TRAIN:")
+    calculateQualityMetrics(trainPredictions, "predictedLabel")
+    // Predicciones y evaluación sobre test
+    val testPredictions = model.transform(test).select("label", "predictedLabel")
+    println("EVALUACIÓN SOBRE TEST:")
+    calculateQualityMetrics(testPredictions, "predictedLabel")
+    /*---------------------------------------------------------------*/
+  }
+
   def main(arg: Array[String]): Unit = {
     // Árboles de Decisión + ROS
     applyDecisionTrees(trainLocalPath, testLocalPath, "ROS")
@@ -316,5 +427,12 @@ object Practica {
     applyRandomForest(trainLocalPath, testLocalPath, "RUS")
     // Random Forest + ASMOTE
     applyRandomForest(trainLocalPath, testLocalPath, "ASMOTE")
+
+    // Factorization Machines + ROS
+    applyFactorizationMachines(trainLocalPath, testLocalPath, "ROS")
+    // Factorization Machines + RUS
+    applyFactorizationMachines(trainLocalPath, testLocalPath, "RUS")
+    // Factorization Machines + ASMOTE
+    applyFactorizationMachines(trainLocalPath, testLocalPath, "ASMOTE")
   }
 }
