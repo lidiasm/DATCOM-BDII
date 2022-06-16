@@ -130,6 +130,7 @@ object Practica {
     test = assembler.transform(test).repartition(100).cache()
 
     /*---------------------------------------------------------------*/
+    // ALGORITMO DE BALANCEADO DE CLASES
     // Almacena el dataframe balanceado resultante
     var balancedTrain: DataFrame = null
     // Aplica el algoritmo de balanceo de clases seleccionado
@@ -239,6 +240,7 @@ object Practica {
     test = assembler.transform(test).repartition(100).cache()
 
     /*---------------------------------------------------------------*/
+    // ALGORITMO DE BALANCEADO DE CLASES
     // Almacena el dataframe balanceado resultante
     var balancedTrain: DataFrame = null
     // Aplica el algoritmo de balanceo de clases seleccionado
@@ -348,6 +350,7 @@ object Practica {
     test = assembler.transform(test).repartition(100).cache()
 
     /*---------------------------------------------------------------*/
+    // ALGORITMO DE BALANCEADO DE CLASES
     // Almacena el dataframe balanceado resultante
     var balancedTrain: DataFrame = null
     // Aplica el algoritmo de balanceo de clases seleccionado
@@ -413,6 +416,111 @@ object Practica {
     /*---------------------------------------------------------------*/
   }
 
+  /**
+   * Función que aplica un algoritmo de preprocesamiento (ROS, RUS o SMOTE)
+   * para balancear el conjunto de entrenamiento y construir un clasificador
+   * utilizando el algoritmo k-Nearest Neighbors-Interactive Spark based.
+   * Finalmente se evalúa su calidad sobre los conjuntos de entrenamiento
+   * y test calculando el número de muestras positivas y negativas bien clasificadas.
+   * @param trainPath ruta hacia el fichero de entrenamiento
+   * @param testPath ruta hacia el fichero de test
+   * @param balAlg algoritmo de balanceo de clases a aplicar sobre el conjunto
+   *               de entrenamiento desbalanceado. Opciones: ROS, RUS o ASMOTE.
+   */
+  def applykNNIS(trainPath: String, testPath: String, balAlg: String): Unit = {
+    // Inicia una nueva sesión de Spark
+    val spark = SparkSession.builder()
+      .master("local[4]")
+      .appName("SparkApp")
+      .getOrCreate()
+
+    // Lectura del conjunto de entrenamiento
+    val dfTrain = spark.read
+      .format("csv")
+      .option("inferSchema", true)
+      .option("header", false)
+      .load(trainPath)
+    // Modificamos el nombre de la variable clase
+    var train = dfTrain.withColumnRenamed("_c18", "label")
+
+    // Lectura del conjunto de test
+    val dfTest = spark.read
+      .format("csv")
+      .option("inferSchema", true)
+      .option("header", false)
+      .load(testPath)
+    // Modifica el nombre de la variable de clase
+    var test = dfTest.withColumnRenamed("_c18", "label")
+
+    // Une las variables de entrada en una columna llamada 'features'
+    val assembler = new VectorAssembler()
+      .setInputCols(dfTrain.columns.init)
+      .setOutputCol("features")
+
+    // Conjunto de entrenamiento y test en caché para mayor velocidad
+    train = assembler.transform(train).repartition(100).cache()
+    test = assembler.transform(test).repartition(100).cache()
+
+    /*---------------------------------------------------------------*/
+    // ALGORITMO DE BALANCEADO DE CLASES
+    // Almacena el dataframe balanceado resultante
+    var balancedTrain: DataFrame = null
+    // Aplica el algoritmo de balanceo de clases seleccionado
+    balAlg match {
+      case "ROS" =>
+        balancedTrain = ROS(train.select("label", "features"),1.0)
+        println("\nDISTRIBUCIÓN DE CLASES TRAS ROS")
+        balancedTrain.groupBy("label").count().show
+
+      case "RUS" =>
+        balancedTrain = RUS(train.select("label", "features"))
+        println("\nDISTRIBUCIÓN DE CLASES TRAS RUS")
+        balancedTrain.groupBy("label").count().show
+
+      case "ASMOTE" =>
+        // Balanceo de clases con semilla para resultados reproducibles
+        val asmote = new ASMOTE().setK(5).setPercOver(5).setSeed(1000)
+        balancedTrain = asmote.transform(train.select("label", "features"))
+        println("\nDISTRIBUCIÓN DE CLASES TRAS ASMOTE")
+        balancedTrain.groupBy("label").count().show
+    }
+    /*---------------------------------------------------------------*/
+
+    /*---------------------------------------------------------------*/
+    // ALGORITMO DE CLASIFICACIÓN
+    // Construye el clasificador con kNN-IS
+    val outPathArray: Array[String] = new Array[String](1)
+    outPathArray(0) = "."
+    val classifierSettings = new kNN_ISClassifier()
+      .setLabelCol("label")
+      .setFeaturesCol("features")
+      .setK(3)
+      .setDistanceType(2)
+      .setNumClass(2)
+      .setNumFeatures(19)
+      .setNumPartitionMap(15)
+      .setNumReduces(15)
+      .setNumIter(1)
+      .setMaxWeight(1)
+      .setNumSamplesTest(test.count.toInt)
+      .setOutPath(outPathArray)
+
+    // Pipeline con todas las actividades
+    val pipeline = new Pipeline().setStages(Array(classifierSettings))
+
+    // Entrenamiento del modelo
+    val model = pipeline.fit(balancedTrain)
+    // Predicciones y evaluación sobre train
+    val trainPredictions = model.transform(balancedTrain).select("label", "prediction")
+    println("EVALUACIÓN SOBRE TRAIN:")
+    calculateQualityMetrics(trainPredictions, "prediction")
+    // Predicciones y evaluación sobre test
+    val testPredictions = model.transform(test).select("label", "prediction")
+    println("EVALUACIÓN SOBRE TEST:")
+    calculateQualityMetrics(testPredictions, "prediction")
+    /*---------------------------------------------------------------*/
+  }
+
   def main(arg: Array[String]): Unit = {
     // Árboles de Decisión + ROS
     applyDecisionTrees(trainLocalPath, testLocalPath, "ROS")
@@ -434,5 +542,12 @@ object Practica {
     applyFactorizationMachines(trainLocalPath, testLocalPath, "RUS")
     // Factorization Machines + ASMOTE
     applyFactorizationMachines(trainLocalPath, testLocalPath, "ASMOTE")
+
+    // kNN-IS + ROS
+    applykNNIS(trainLocalPath, testLocalPath, "ROS")
+    // kNN-IS + RUS
+    applykNNIS(trainLocalPath, testLocalPath, "RUS")
+    // kNN-IS + ASMOTE
+    applykNNIS(trainLocalPath, testLocalPath, "ASMOTE")
   }
 }
