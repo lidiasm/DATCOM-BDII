@@ -1,7 +1,5 @@
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.DataFrame
-import org.apache.spark.sql.functions.col
-import org.apache.spark.sql.types.{DoubleType, IntegerType}
 import org.apache.spark.ml.feature.{IndexToString, MinMaxScaler, StringIndexer, VectorAssembler, VectorIndexer}
 import org.apache.spark.ml.Pipeline
 import org.apache.spark.ml.instance.ASMOTE
@@ -9,6 +7,11 @@ import org.apache.spark.ml.classification.DecisionTreeClassifier
 import org.apache.spark.ml.classification.RandomForestClassifier
 import org.apache.spark.ml.classification.FMClassifier
 import org.apache.spark.ml.classification.kNN_IS.kNN_ISClassifier
+import org.apache.spark.mllib.feature._
+import org.apache.spark.mllib.linalg.Vectors
+import org.apache.spark.mllib.regression.LabeledPoint
+import org.apache.spark.mllib.tree.DecisionTree
+import org.apache.spark.rdd.RDD
 
 object Practica {
 
@@ -16,9 +19,13 @@ object Practica {
   val trainClusterPath = "hdfs://192.168.10.1/user/datasets/master/susy/susyMaster-Train.data"
   val testClusterPath = "hdfs://192.168.10.1/user/datasets/master/susy/susyMaster-Test.data"
 
-  // Rutas hacia los ficheros locales
-  val trainLocalPath = "/home/usuario/datasets/susy-10k-tra.data"
-  val testLocalPath = "/home/usuario/datasets/susy-10k-tst.data"
+  // Rutas hacia los ficheros ampliados en local
+  val trainLocalPath = "/home/usuario/datasets/susyMaster-Train.data"
+  val testLocalPath = "/home/usuario/datasets/susyMaster-Test.data"
+
+  // Rutas hacia los ficheros reducidos en local
+  val train10kLocalPath = "/home/usuario/datasets/susy-10k-tra.data"
+  val test10kLocalPath = "/home/usuario/datasets/susy-10k-tst.data"
 
   /**
    * Algoritmo de balanceo de clases ROS (random oversampling)
@@ -95,7 +102,7 @@ object Practica {
    * @param balAlg algoritmo de balanceo de clases a aplicar sobre el conjunto
    *               de entrenamiento desbalanceado. Opciones: ROS, RUS o ASMOTE.
    */
-  def applyDecisionTrees(trainPath: String, testPath: String, balAlg: String): Unit = {
+  def applyDecisionTreesDF(trainPath: String, testPath: String, balAlg: String): Unit = {
     // Inicia una nueva sesión de Spark
     val spark = SparkSession.builder()
       .master("local[4]")
@@ -419,8 +426,8 @@ object Practica {
   /**
    * Función que aplica un algoritmo de preprocesamiento (ROS, RUS o SMOTE)
    * para balancear el conjunto de entrenamiento y construir un clasificador
-   * utilizando el algoritmo k-Nearest Neighbors-Interactive Spark based.
-   * Finalmente se evalúa su calidad sobre los conjuntos de entrenamiento
+   * utilizando el algoritmo k-Nearest Neighbors Iterative Spark-based.
+   * Finalmente se evalúa su calidad sobre los conjuntos de entrenamiento 
    * y test calculando el número de muestras positivas y negativas bien clasificadas.
    * @param trainPath ruta hacia el fichero de entrenamiento
    * @param testPath ruta hacia el fichero de test
@@ -441,7 +448,7 @@ object Practica {
       .option("header", false)
       .load(trainPath)
     // Modificamos el nombre de la variable clase
-    var train = dfTrain.withColumnRenamed("_c18", "label")
+    var train = dfTrain.withColumn("label", dfTrain("_c18").cast("Integer"))
 
     // Lectura del conjunto de test
     val dfTest = spark.read
@@ -450,7 +457,7 @@ object Practica {
       .option("header", false)
       .load(testPath)
     // Modifica el nombre de la variable de clase
-    var test = dfTest.withColumnRenamed("_c18", "label")
+    var test = dfTest.withColumn("label", dfTest("_c18").cast("Integer"))
 
     // Une las variables de entrada en una columna llamada 'features'
     val assembler = new VectorAssembler()
@@ -500,7 +507,7 @@ object Practica {
       .setNumFeatures(19)
       .setNumPartitionMap(15)
       .setNumReduces(15)
-      .setNumIter(1)
+      .setNumIter(10)
       .setMaxWeight(1)
       .setNumSamplesTest(test.count.toInt)
       .setOutPath(outPathArray)
@@ -521,13 +528,91 @@ object Practica {
     /*---------------------------------------------------------------*/
   }
 
+  /**
+   * Función que aplica un algoritmo de preprocesamiento (HME, HTE o ENN)
+   * para balancear el conjunto de entrenamiento y construir un clasificador
+   * utilizando el algoritmo Árboles de Decisión utilizando la librería MLLib (RDD).
+   * Finalmente se evalúa su calidad sobre los conjuntos de entrenamiento 
+   * y test calculando el número de muestras positivas y negativas bien clasificadas.
+   * @param trainPath ruta hacia el fichero de entrenamiento
+   * @param testPath ruta hacia el fichero de test
+   * @param balAlg algoritmo de balanceo de clases a aplicar sobre el conjunto
+   *               de entrenamiento desbalanceado. Opciones: HME, HTE, ENN.
+   */
+  def applyDecisionTreesRDD(trainPath: String, testPath: String, balAlg: String): Unit = {
+    // Inicia una nueva sesión de Spark
+    val spark = SparkSession.builder()
+      .master("local[4]")
+      .appName("SparkApp")
+      .getOrCreate()
+
+    // Lectura del conjunto de entrenamiento como RDD
+    val rddTrain = spark.sparkContext.textFile(trainPath).map { line =>
+      val featureVector = Vectors.dense(line.split(",").map(f => f.toDouble).init)
+      val label = line.split(",").map(f => f.toDouble).last
+      LabeledPoint(label, featureVector)
+    }.persist
+
+    // Lectura del conjunto de test como RDD
+    val rddTest = spark.sparkContext.textFile(testPath).map { line =>
+      val featureVector = Vectors.dense(line.split(",").map(f => f.toDouble).init)
+      val label = line.split(",").map(f => f.toDouble).last
+      LabeledPoint(label, featureVector)
+    }.persist
+
+    /*---------------------------------------------------------------*/
+    // ALGORITMO DE BALANCEADO DE CLASES
+    // Almacena el dataframe balanceado resultante
+    var balancedTrain: RDD[LabeledPoint] = null
+    // Aplica el algoritmo de balanceo de clases seleccionado
+    balAlg match {
+      case "HME" =>
+        balancedTrain = new HME_BD(rddTrain, 100, 4, 10, 1000).runFilter()
+        println("\nDISTRIBUCIÓN DE CLASES TRAS HME")
+
+      case "HTE" =>
+        balancedTrain = new HTE_BD(rddTrain, 100, 4, 0, 3, 10, 1000).runFilter()
+        println("\nDISTRIBUCIÓN DE CLASES TRAS HTE")
+
+      case "ENN" =>
+        balancedTrain = new ENN_BD(rddTrain, 3).runFilter()
+        println("\nDISTRIBUCIÓN DE CLASES TRAS ENN")
+    }
+    // Convierte el RDD a Dataframe para observar el balanceo de clases
+    import spark.implicits._
+    val balancedTrainDF = balancedTrain.map(e => (e.label, e.features)).toDF("label", "features")
+    balancedTrainDF.groupBy("label").count().show
+    /*---------------------------------------------------------------*/
+
+    /*---------------------------------------------------------------*/
+    // ALGORITMO DE CLASIFICACIÓN
+    // Configuración y entrenamiento de un modelo con Árboles de Decisión
+    val model = DecisionTree.trainClassifier(balancedTrain, 2, Map[Int, Int](),
+      "gini", 10, 32)
+    // Predicciones y evaluación sobre entrenamiento
+    val trainPredictions = balancedTrain.map { point =>
+      val prediction = model.predict(point.features)
+      (point.label, prediction)
+    }
+    println("TP = " + trainPredictions.filter(r => r._1 == r._2 && r._1 == 1).count())
+    println("TN = " + trainPredictions.filter(r => r._1 == r._2 && r._1 == 0).count())
+    // Predicciones y evaluación sobre test
+    val testPredictions = rddTest.map { point =>
+      val prediction = model.predict(point.features)
+      (point.label, prediction)
+    }
+    println("TP = " + testPredictions.filter(r => r._1 == r._2 && r._1 == 1).count())
+    println("TN = " + testPredictions.filter(r => r._1 == r._2 && r._1 == 0).count())
+    /*---------------------------------------------------------------*/
+  }
+
   def main(arg: Array[String]): Unit = {
     // Árboles de Decisión + ROS
-    applyDecisionTrees(trainLocalPath, testLocalPath, "ROS")
+    applyDecisionTreesDF(train10kLocalPath, test10kLocalPath, "ROS")
     // Árboles de Decisión + RUS
-    applyDecisionTrees(trainLocalPath, testLocalPath, "RUS")
+    applyDecisionTreesDF(trainClusterPath, testClusterPath, "RUS")
     // Árboles de Decisión + ASMOTE
-    applyDecisionTrees(trainLocalPath, testLocalPath, "ASMOTE")
+    applyDecisionTreesDF(trainClusterPath, testClusterPath, "ASMOTE")
 
     // Random Forest + ROS
     applyRandomForest(trainLocalPath, testLocalPath, "ROS")
@@ -544,10 +629,17 @@ object Practica {
     applyFactorizationMachines(trainLocalPath, testLocalPath, "ASMOTE")
 
     // kNN-IS + ROS
-    applykNNIS(trainLocalPath, testLocalPath, "ROS")
+    applykNNIS(train10kLocalPath, test10kLocalPath, "ROS")
     // kNN-IS + RUS
     applykNNIS(trainLocalPath, testLocalPath, "RUS")
     // kNN-IS + ASMOTE
     applykNNIS(trainLocalPath, testLocalPath, "ASMOTE")
+
+    // Árboles de Decisión + HME
+    applyDecisionTreesRDD(trainClusterPath, testClusterPath, "HME")
+    // Árboles de Decisión + HTE
+    applyDecisionTreesRDD(train10kLocalPath, test10kLocalPath, "HTE")
+    // Árboles de Decisión + HTE
+    applyDecisionTreesRDD(train10kLocalPath, test10kLocalPath, "ENN")
   }
 }
