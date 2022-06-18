@@ -5,12 +5,13 @@ import org.apache.spark.ml.Pipeline
 import org.apache.spark.ml.instance.ASMOTE
 import org.apache.spark.ml.classification.DecisionTreeClassifier
 import org.apache.spark.ml.classification.RandomForestClassifier
+import org.apache.spark.ml.classification.GBTClassifier
 import org.apache.spark.ml.classification.FMClassifier
 import org.apache.spark.ml.classification.kNN_IS.kNN_ISClassifier
 import org.apache.spark.mllib.feature._
 import org.apache.spark.mllib.linalg.Vectors
 import org.apache.spark.mllib.regression.LabeledPoint
-import org.apache.spark.mllib.tree.DecisionTree
+import org.apache.spark.mllib.tree.{DecisionTree, GradientBoostedTrees}
 import org.apache.spark.rdd.RDD
 
 object Practica {
@@ -204,6 +205,116 @@ object Practica {
   /**
    * Función que aplica un algoritmo de preprocesamiento (ROS, RUS o SMOTE)
    * para balancear el conjunto de entrenamiento y construir un clasificador
+   * utilizando el algoritmo Gradient-Boosted Trees. Finalmente se evalúa su
+   * calidad sobre los conjuntos de entrenamiento y test calculando el número
+   * de muestras positivas y negativas bien clasificadas.
+   * @param trainPath ruta hacia el fichero de entrenamiento
+   * @param testPath ruta hacia el fichero de test
+   * @param balAlg algoritmo de balanceo de clases a aplicar sobre el conjunto
+   *               de entrenamiento desbalanceado. Opciones: ROS, RUS o ASMOTE.
+   */
+  def applyGradientBoostedTreesDF(trainPath: String, testPath: String, balAlg: String): Unit = {
+    // Inicia una nueva sesión de Spark
+    val spark = SparkSession.builder()
+      .master("local[4]")
+      .appName("SparkApp")
+      .getOrCreate()
+
+    // Lectura del conjunto de entrenamiento
+    val dfTrain = spark.read
+      .format("csv")
+      .option("inferSchema", true)
+      .option("header", false)
+      .load(trainPath)
+    // Modificamos el nombre de la variable clase
+    var train = dfTrain.withColumnRenamed("_c18", "label")
+
+    // Lectura del conjunto de test
+    val dfTest = spark.read
+      .format("csv")
+      .option("inferSchema", true)
+      .option("header", false)
+      .load(testPath)
+    // Modifica el nombre de la variable de clase
+    var test = dfTest.withColumnRenamed("_c18", "label")
+
+    // Une las variables de entrada en una columna llamada 'features'
+    val assembler = new VectorAssembler()
+      .setInputCols(dfTrain.columns.init)
+      .setOutputCol("features")
+
+    // Conjunto de entrenamiento y test en caché para mayor velocidad
+    train = assembler.transform(train).repartition(100).cache()
+    test = assembler.transform(test).repartition(100).cache()
+
+    /*---------------------------------------------------------------*/
+    // ALGORITMO DE BALANCEADO DE CLASES
+    // Almacena el dataframe balanceado resultante
+    var balancedTrain: DataFrame = null
+    // Aplica el algoritmo de balanceo de clases seleccionado
+    balAlg match {
+      case "ROS" =>
+        balancedTrain = ROS(train.select("label", "features"),1.0)
+        println("\nDISTRIBUCIÓN DE CLASES TRAS ROS")
+        balancedTrain.groupBy("label").count().show
+
+      case "RUS" =>
+        balancedTrain = RUS(train.select("label", "features"))
+        println("\nDISTRIBUCIÓN DE CLASES TRAS RUS")
+        balancedTrain.groupBy("label").count().show
+
+      case "ASMOTE" =>
+        // Balanceo de clases con semilla para resultados reproducibles
+        val asmote = new ASMOTE().setK(5).setPercOver(5).setSeed(1000)
+        balancedTrain = asmote.transform(train.select("label", "features"))
+        println("\nDISTRIBUCIÓN DE CLASES TRAS ASMOTE")
+        balancedTrain.groupBy("label").count().show
+    }
+    /*---------------------------------------------------------------*/
+
+    /*---------------------------------------------------------------*/
+    // ALGORITMO DE CLASIFICACIÓN
+    // Indexa las variables del dataset
+    val labelIndexer = new StringIndexer()
+      .setInputCol("label")
+      .setOutputCol("indexedLabel")
+      .fit(balancedTrain)
+    val featureIndexer = new VectorIndexer()
+      .setInputCol("features")
+      .setOutputCol("indexedFeatures")
+      .fit(balancedTrain)
+
+    // Construye el clasificador con Árboles de Decisión
+    val classifierSettings = new GBTClassifier()
+      .setLabelCol("indexedLabel")
+      .setFeaturesCol("indexedFeatures")
+
+    // Traduce las etiquetas predichas al rango de valores del dataset
+    val labelConverter = new IndexToString()
+      .setInputCol("prediction")
+      .setOutputCol("predictedLabel")
+      .setLabels(labelIndexer.labels)
+
+    // Pipeline con todas las actividades
+    val pipeline = new Pipeline()
+      .setStages(Array(labelIndexer, featureIndexer, classifierSettings, labelConverter))
+
+    // Entrenamiento del modelo
+    val model = pipeline.fit(balancedTrain)
+    // Predicciones y evaluación sobre train
+    val trainPredictions = model.transform(balancedTrain).select("label", "predictedLabel")
+    println("EVALUACIÓN SOBRE TRAIN:")
+    calculateQualityMetrics(trainPredictions, "predictedLabel")
+    // Predicciones y evaluación sobre test
+    val testPredictions = model.transform(test).select("label", "predictedLabel")
+    println("EVALUACIÓN SOBRE TEST:")
+    calculateQualityMetrics(testPredictions, "predictedLabel")
+    /*---------------------------------------------------------------*/
+  }
+
+  /**
+   * Función que aplica un algoritmo de preprocesamiento (ROS, RUS o SMOTE)
+   * para balancear el conjunto de entrenamiento y construir un clasificador
    * utilizando el algoritmo Random Forest. Finalmente se evalúa su calidad
    * sobre los conjuntos de entrenamiento y test calculando el número
    * de muestras positivas y negativas bien clasificadas.
@@ -212,7 +323,7 @@ object Practica {
    * @param balAlg algoritmo de balanceo de clases a aplicar sobre el conjunto
    *               de entrenamiento desbalanceado. Opciones: ROS, RUS o ASMOTE.
    */
-  def applyRandomForest(trainPath: String, testPath: String, balAlg: String): Unit = {
+  def applyRandomForestDF(trainPath: String, testPath: String, balAlg: String): Unit = {
     // Inicia una nueva sesión de Spark
     val spark = SparkSession.builder()
       .master("local[4]")
@@ -322,7 +433,7 @@ object Practica {
    * @param balAlg algoritmo de balanceo de clases a aplicar sobre el conjunto
    *               de entrenamiento desbalanceado. Opciones: ROS, RUS o ASMOTE.
    */
-  def applyFactorizationMachines(trainPath: String, testPath: String, balAlg: String): Unit = {
+  def applyFactorizationMachinesDF(trainPath: String, testPath: String, balAlg: String): Unit = {
     // Inicia una nueva sesión de Spark
     val spark = SparkSession.builder()
       .master("local[4]")
@@ -423,18 +534,7 @@ object Practica {
     /*---------------------------------------------------------------*/
   }
 
-  /**
-   * Función que aplica un algoritmo de preprocesamiento (ROS, RUS o SMOTE)
-   * para balancear el conjunto de entrenamiento y construir un clasificador
-   * utilizando el algoritmo k-Nearest Neighbors Iterative Spark-based.
-   * Finalmente se evalúa su calidad sobre los conjuntos de entrenamiento 
-   * y test calculando el número de muestras positivas y negativas bien clasificadas.
-   * @param trainPath ruta hacia el fichero de entrenamiento
-   * @param testPath ruta hacia el fichero de test
-   * @param balAlg algoritmo de balanceo de clases a aplicar sobre el conjunto
-   *               de entrenamiento desbalanceado. Opciones: ROS, RUS o ASMOTE.
-   */
-  def applykNNIS(trainPath: String, testPath: String, balAlg: String): Unit = {
+  def applykNNISDF(trainPath: String, testPath: String, balAlg: String): Unit = {
     // Inicia una nueva sesión de Spark
     val spark = SparkSession.builder()
       .master("local[4]")
@@ -528,17 +628,6 @@ object Practica {
     /*---------------------------------------------------------------*/
   }
 
-  /**
-   * Función que aplica un algoritmo de preprocesamiento (HME, HTE o ENN)
-   * para balancear el conjunto de entrenamiento y construir un clasificador
-   * utilizando el algoritmo Árboles de Decisión utilizando la librería MLLib (RDD).
-   * Finalmente se evalúa su calidad sobre los conjuntos de entrenamiento 
-   * y test calculando el número de muestras positivas y negativas bien clasificadas.
-   * @param trainPath ruta hacia el fichero de entrenamiento
-   * @param testPath ruta hacia el fichero de test
-   * @param balAlg algoritmo de balanceo de clases a aplicar sobre el conjunto
-   *               de entrenamiento desbalanceado. Opciones: HME, HTE, ENN.
-   */
   def applyDecisionTreesRDD(trainPath: String, testPath: String, balAlg: String): Unit = {
     // Inicia una nueva sesión de Spark
     val spark = SparkSession.builder()
@@ -615,11 +704,18 @@ object Practica {
     applyDecisionTreesDF(trainClusterPath, testClusterPath, "ASMOTE")
 
     // Random Forest + ROS
-    applyRandomForest(trainLocalPath, testLocalPath, "ROS")
+    applyRandomForestDF(trainLocalPath, testLocalPath, "ROS")
     // Random Forest + RUS
-    applyRandomForest(trainLocalPath, testLocalPath, "RUS")
+    applyRandomForestDF(trainLocalPath, testLocalPath, "RUS")
     // Random Forest + ASMOTE
-    applyRandomForest(trainLocalPath, testLocalPath, "ASMOTE")
+    applyRandomForestDF(trainLocalPath, testLocalPath, "ASMOTE")
+
+    // Gradient-Boosted Trees + ROS
+    applyGradientBoostedTreesDF(trainLocalPath, testLocalPath, "ROS")
+    // Gradient-Boosted Trees + RUS
+    applyGradientBoostedTreesDF(trainLocalPath, testLocalPath, "RUS")
+    // Gradient-Boosted Trees + ASMOTE
+    applyGradientBoostedTreesDF(trainLocalPath, testLocalPath, "ASMOTE")
 
     // Factorization Machines + ROS
     applyFactorizationMachines(trainLocalPath, testLocalPath, "ROS")
@@ -629,14 +725,14 @@ object Practica {
     applyFactorizationMachines(trainLocalPath, testLocalPath, "ASMOTE")
 
     // kNN-IS + ROS
-    applykNNIS(train10kLocalPath, test10kLocalPath, "ROS")
+    applykNNISDF(train10kLocalPath, test10kLocalPath, "ROS")
     // kNN-IS + RUS
-    applykNNIS(trainLocalPath, testLocalPath, "RUS")
+    applykNNISDF(trainLocalPath, testLocalPath, "RUS")
     // kNN-IS + ASMOTE
-    applykNNIS(trainLocalPath, testLocalPath, "ASMOTE")
+    applykNNISDF(trainLocalPath, testLocalPath, "ASMOTE")
 
     // Árboles de Decisión + HME
-    applyDecisionTreesRDD(trainClusterPath, testClusterPath, "HME")
+    applyDecisionTreesRDD(trainLocalPath, testLocalPath, "HME")
     // Árboles de Decisión + HTE
     applyDecisionTreesRDD(train10kLocalPath, test10kLocalPath, "HTE")
     // Árboles de Decisión + HTE
