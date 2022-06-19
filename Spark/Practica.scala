@@ -31,6 +31,9 @@ object Practica {
   val train10kLocalPath = "/home/usuario/datasets/susy-10k-tra.data"
   val test10kLocalPath = "/home/usuario/datasets/susy-10k-tst.data"
 
+  // Semilla para que los resultados sean reproducibles
+  val seed = 1000
+
   /**
    * Algoritmo de balanceado de clases ROS (random oversampling)
    * utilizando la librería ML (DataFrames).
@@ -48,10 +51,10 @@ object Practica {
 
     if (num_pos > num_neg) {
       val fraction = (num_pos * overRate) / num_neg
-      oversample = train_positive.union(train_negative.sample(withReplacement = true, fraction, seed = 1000))
+      oversample = train_positive.union(train_negative.sample(withReplacement = true, fraction, seed = seed))
     } else {
       val fraction = (num_neg * overRate) / num_pos
-      oversample = train_negative.union(train_positive.sample(withReplacement = true, fraction, seed = 1000))
+      oversample = train_negative.union(train_positive.sample(withReplacement = true, fraction, seed = seed))
     }
     oversample.repartition(train.rdd.getNumPartitions)
   }
@@ -72,10 +75,10 @@ object Practica {
 
     if (num_pos > num_neg) {
       val fraction = num_neg / num_pos
-      undersample = train_negative.union(train_positive.sample(withReplacement = false, fraction, seed = 1000))
+      undersample = train_negative.union(train_positive.sample(withReplacement = false, fraction, seed = seed))
     } else {
       val fraction = num_pos / num_neg
-      undersample = train_positive.union(train_negative.sample(withReplacement = false, fraction, seed = 1000))
+      undersample = train_positive.union(train_negative.sample(withReplacement = false, fraction, seed = seed))
     }
     undersample.repartition(train.rdd.getNumPartitions)
   }
@@ -160,7 +163,7 @@ object Practica {
 
       case "ASMOTE" =>
         // Balanceo de clases con semilla para resultados reproducibles
-        val asmote = new ASMOTE().setK(5).setPercOver(800).setSeed(1000)
+        val asmote = new ASMOTE().setK(5).setPercOver(800).setSeed(seed)
         balancedTrain = asmote.transform(train.select("label", "features"))
         println("\nDISTRIBUCIÓN DE CLASES TRAS ASMOTE")
         balancedTrain.groupBy("label").count().show
@@ -270,7 +273,7 @@ object Practica {
 
       case "ASMOTE" =>
         // Balanceo de clases con semilla para resultados reproducibles
-        val asmote = new ASMOTE().setK(5).setPercOver(800).setSeed(1000)
+        val asmote = new ASMOTE().setK(5).setPercOver(800).setSeed(seed)
         balancedTrain = asmote.transform(train.select("label", "features"))
         println("\nDISTRIBUCIÓN DE CLASES TRAS ASMOTE")
         balancedTrain.groupBy("label").count().show
@@ -380,7 +383,7 @@ object Practica {
 
       case "ASMOTE" =>
         // Balanceo de clases con semilla para resultados reproducibles
-        val asmote = new ASMOTE().setK(5).setPercOver(800).setSeed(1000)
+        val asmote = new ASMOTE().setK(5).setPercOver(800).setSeed(seed)
         balancedTrain = asmote.transform(train.select("label", "features"))
         println("\nDISTRIBUCIÓN DE CLASES TRAS ASMOTE")
         balancedTrain.groupBy("label").count().show
@@ -490,7 +493,7 @@ object Practica {
 
       case "ASMOTE" =>
         // Balanceo de clases con semilla para resultados reproducibles
-        val asmote = new ASMOTE().setK(5).setPercOver(800).setSeed(1000)
+        val asmote = new ASMOTE().setK(5).setPercOver(800).setSeed(seed)
         balancedTrain = asmote.transform(train.select("label", "features"))
         println("\nDISTRIBUCIÓN DE CLASES TRAS ASMOTE")
         balancedTrain.groupBy("label").count().show
@@ -603,7 +606,7 @@ object Practica {
 
       case "ASMOTE" =>
         // Balanceo de clases con semilla para resultados reproducibles
-        val asmote = new ASMOTE().setK(5).setPercOver(800).setSeed(1000)
+        val asmote = new ASMOTE().setK(5).setPercOver(800).setSeed(seed)
         balancedTrain = asmote.transform(train.select("label", "features"))
         println("\nDISTRIBUCIÓN DE CLASES TRAS ASMOTE")
         balancedTrain.groupBy("label").count().show
@@ -709,7 +712,7 @@ object Practica {
 
       case "ASMOTE" =>
         // Balanceo de clases con semilla para resultados reproducibles
-        val asmote = new ASMOTE().setK(5).setPercOver(800).setSeed(1000)
+        val asmote = new ASMOTE().setK(5).setPercOver(800).setSeed(seed)
         balancedTrain = asmote.transform(train.select("label", "features"))
         println("\nDISTRIBUCIÓN DE CLASES TRAS ASMOTE")
         balancedTrain.groupBy("label").count().show
@@ -793,18 +796,34 @@ object Practica {
     // ALGORITMO DE BALANCEADO DE CLASES
     // Almacena el dataframe balanceado resultante
     var balancedTrain: RDD[LabeledPoint] = null
+    // Variables que almacenan la configuración del algoritmo de preprocesamiento
+    val nTrees = 100
+    val partitions = 4
+    val maxBalDepth = 10
+    val voting = 0
+    val k = 3
     // Aplica el algoritmo de balanceo de clases seleccionado
     balAlg match {
       case "HME" =>
-        balancedTrain = new HME_BD(rddTrain, 100, 4, 10, 1000).runFilter()
+        balancedTrain = new HME_BD(rddTrain,
+          nTrees,
+          partitions,
+          maxBalDepth,
+          seed).runFilter()
         println("\nDISTRIBUCIÓN DE CLASES TRAS HME")
 
       case "HTE" =>
-        balancedTrain = new HTE_BD(rddTrain, 100, 4, 0, 3, 10, 1000).runFilter()
+        balancedTrain = new HTE_BD(rddTrain,
+          nTrees,
+          partitions,
+          voting,
+          k,
+          maxBalDepth,
+          seed).runFilter()
         println("\nDISTRIBUCIÓN DE CLASES TRAS HTE")
 
       case "ENN" =>
-        balancedTrain = new ENN_BD(rddTrain, 3).runFilter()
+        balancedTrain = new ENN_BD(rddTrain, k).runFilter()
         println("\nDISTRIBUCIÓN DE CLASES TRAS ENN")
     }
     // Convierte el RDD a Dataframe para observar el balanceo de clases
@@ -881,18 +900,34 @@ object Practica {
     // ALGORITMO DE BALANCEADO DE CLASES
     // Almacena el dataframe balanceado resultante
     var balancedTrain: RDD[LabeledPoint] = null
+    // Variables que almacenan la configuración del algoritmo de preprocesamiento
+    val nTrees = 100
+    val partitions = 4
+    val maxBalDepth = 10
+    val voting = 0
+    val k = 3
     // Aplica el algoritmo de balanceo de clases seleccionado
     balAlg match {
       case "HME" =>
-        balancedTrain = new HME_BD(rddTrain, 100, 4, 10, 1000).runFilter()
+        balancedTrain = new HME_BD(rddTrain,
+          nTrees,
+          partitions,
+          maxBalDepth,
+          seed).runFilter()
         println("\nDISTRIBUCIÓN DE CLASES TRAS HME")
 
       case "HTE" =>
-        balancedTrain = new HTE_BD(rddTrain, 100, 4, 0, 3, 10, 1000).runFilter()
+        balancedTrain = new HTE_BD(rddTrain,
+          nTrees,
+          partitions,
+          voting,
+          k,
+          maxBalDepth,
+          seed).runFilter()
         println("\nDISTRIBUCIÓN DE CLASES TRAS HTE")
 
       case "ENN" =>
-        balancedTrain = new ENN_BD(rddTrain, 3).runFilter()
+        balancedTrain = new ENN_BD(rddTrain, k).runFilter()
         println("\nDISTRIBUCIÓN DE CLASES TRAS ENN")
     }
     // Convierte el RDD a Dataframe para observar el balanceo de clases
@@ -964,18 +999,34 @@ object Practica {
     // ALGORITMO DE BALANCEADO DE CLASES
     // Almacena el dataframe balanceado resultante
     var balancedTrain: RDD[LabeledPoint] = null
+    // Variables que almacenan la configuración del algoritmo de preprocesamiento
+    val nTrees = 100
+    val partitions = 4
+    val maxBalDepth = 10
+    val voting = 0
+    val k = 3
     // Aplica el algoritmo de balanceo de clases seleccionado
     balAlg match {
       case "HME" =>
-        balancedTrain = new HME_BD(rddTrain, 100, 4, 10, 1000).runFilter()
+        balancedTrain = new HME_BD(rddTrain,
+          nTrees,
+          partitions,
+          maxBalDepth,
+          seed).runFilter()
         println("\nDISTRIBUCIÓN DE CLASES TRAS HME")
 
       case "HTE" =>
-        balancedTrain = new HTE_BD(rddTrain, 100, 4, 0, 3, 10, 1000).runFilter()
+        balancedTrain = new HTE_BD(rddTrain,
+          nTrees,
+          partitions,
+          voting,
+          k,
+          maxBalDepth,
+          seed).runFilter()
         println("\nDISTRIBUCIÓN DE CLASES TRAS HTE")
 
       case "ENN" =>
-        balancedTrain = new ENN_BD(rddTrain, 3).runFilter()
+        balancedTrain = new ENN_BD(rddTrain, k).runFilter()
         println("\nDISTRIBUCIÓN DE CLASES TRAS ENN")
     }
     // Convierte el RDD a Dataframe para observar el balanceo de clases
@@ -1056,18 +1107,34 @@ object Practica {
     // ALGORITMO DE BALANCEADO DE CLASES
     // Almacena el dataframe balanceado resultante
     var balancedTrain: RDD[LabeledPoint] = null
+    // Variables que almacenan la configuración del algoritmo de preprocesamiento
+    val nTrees = 100
+    val partitions = 4
+    val maxBalDepth = 10
+    val voting = 0
+    val k = 3
     // Aplica el algoritmo de balanceo de clases seleccionado
     balAlg match {
       case "HME" =>
-        balancedTrain = new HME_BD(rddTrain, 100, 4, 10, 1000).runFilter()
+        balancedTrain = new HME_BD(rddTrain,
+          nTrees,
+          partitions,
+          maxBalDepth,
+          seed).runFilter()
         println("\nDISTRIBUCIÓN DE CLASES TRAS HME")
 
       case "HTE" =>
-        balancedTrain = new HTE_BD(rddTrain, 100, 4, 0, 3, 10, 1000).runFilter()
+        balancedTrain = new HTE_BD(rddTrain,
+          nTrees,
+          partitions,
+          voting,
+          k,
+          maxBalDepth,
+          seed).runFilter()
         println("\nDISTRIBUCIÓN DE CLASES TRAS HTE")
 
       case "ENN" =>
-        balancedTrain = new ENN_BD(rddTrain, 3).runFilter()
+        balancedTrain = new ENN_BD(rddTrain, k).runFilter()
         println("\nDISTRIBUCIÓN DE CLASES TRAS ENN")
     }
     // Convierte el RDD a Dataframe para observar el balanceo de clases
@@ -1137,18 +1204,34 @@ object Practica {
     // ALGORITMO DE BALANCEADO DE CLASES
     // Almacena el dataframe balanceado resultante
     var balancedTrain: RDD[LabeledPoint] = null
+    // Variables que almacenan la configuración del algoritmo de preprocesamiento
+    val nTrees = 100
+    val partitions = 4
+    val maxBalDepth = 10
+    val voting = 0
+    val BalK = 3
     // Aplica el algoritmo de balanceo de clases seleccionado
     balAlg match {
       case "HME" =>
-        balancedTrain = new HME_BD(rddTrain, 100, 4, 10, 1000).runFilter()
+        balancedTrain = new HME_BD(rddTrain,
+          nTrees,
+          partitions,
+          maxBalDepth,
+          seed).runFilter()
         println("\nDISTRIBUCIÓN DE CLASES TRAS HME")
 
       case "HTE" =>
-        balancedTrain = new HTE_BD(rddTrain, 100, 4, 0, 3, 10, 1000).runFilter()
+        balancedTrain = new HTE_BD(rddTrain,
+          nTrees,
+          partitions,
+          voting,
+          BalK,
+          maxBalDepth,
+          seed).runFilter()
         println("\nDISTRIBUCIÓN DE CLASES TRAS HTE")
 
       case "ENN" =>
-        balancedTrain = new ENN_BD(rddTrain, 3).runFilter()
+        balancedTrain = new ENN_BD(rddTrain, BalK).runFilter()
         println("\nDISTRIBUCIÓN DE CLASES TRAS ENN")
     }
     // Convierte el RDD a Dataframe para observar el balanceo de clases
