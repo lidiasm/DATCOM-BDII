@@ -5,12 +5,14 @@ import org.apache.spark.ml.Pipeline
 import org.apache.spark.ml.instance.ASMOTE
 import org.apache.spark.ml.classification.{DecisionTreeClassifier, RandomForestClassifier, GBTClassifier, FMClassifier, LogisticRegression}
 import org.apache.spark.ml.classification.kNN_IS.kNN_ISClassifier
+import com.microsoft.azure.synapse.ml.lightgbm.LightGBMClassifier
 
 import org.apache.spark.mllib.feature._
 import org.apache.spark.rdd.RDD
 import org.apache.spark.mllib.linalg.Vectors
 import org.apache.spark.mllib.regression.LabeledPoint
 import org.apache.spark.mllib.tree.DecisionTree
+
 
 object Practica {
 
@@ -641,6 +643,118 @@ object Practica {
   }
 
   /**
+   * Función que aplica un algoritmo de preprocesamiento (ROS, RUS o ASMOTE)
+   * para balancear el conjunto de entrenamiento y construir un clasificador
+   * utilizando el algoritmo Light Gradient Boosted Machines haciendo
+   * referencia a la librería ML (DataFrames). Finalmente se evalúa su
+   * calidad sobre los conjuntos de entrenamiento y test calculando el número
+   * de muestras positivas y negativas bien clasificadas.
+   * @param trainPath ruta hacia el fichero de entrenamiento
+   * @param testPath ruta hacia el fichero de test
+   * @param balAlg algoritmo de balanceo de clases a aplicar sobre el conjunto
+   *               de entrenamiento desbalanceado. Opciones: ROS, RUS o ASMOTE.
+   */
+  def applyLightGBMDF(trainPath: String, testPath: String, balAlg: String): Unit = {
+    // Inicia una nueva sesión de Spark
+    val spark = SparkSession.builder()
+      .master("local[4]")
+      .appName("SparkApp")
+      .getOrCreate()
+
+    // Lectura del conjunto de entrenamiento
+    val dfTrain = spark.read
+      .format("csv")
+      .option("inferSchema", true)
+      .option("header", false)
+      .load(trainPath)
+    // Modificamos el nombre de la variable clase
+    var train = dfTrain.withColumnRenamed("_c18", "label")
+
+    // Lectura del conjunto de test
+    val dfTest = spark.read
+      .format("csv")
+      .option("inferSchema", true)
+      .option("header", false)
+      .load(testPath)
+    // Modifica el nombre de la variable de clase
+    var test = dfTest.withColumnRenamed("_c18", "label")
+
+    // Une las variables de entrada en una columna llamada 'features'
+    val assembler = new VectorAssembler()
+      .setInputCols(dfTrain.columns.init)
+      .setOutputCol("features")
+
+    // Conjunto de entrenamiento y test en caché para mayor velocidad
+    train = assembler.transform(train).repartition(100).cache()
+    test = assembler.transform(test).repartition(100).cache()
+
+    /*---------------------------------------------------------------*/
+    // ALGORITMO DE BALANCEADO DE CLASES
+    // Almacena el dataframe balanceado resultante
+    var balancedTrain: DataFrame = null
+    // Aplica el algoritmo de balanceo de clases seleccionado
+    balAlg match {
+      case "ROS" =>
+        balancedTrain = ROS(train.select("label", "features"),1.0)
+        println("\nDISTRIBUCIÓN DE CLASES TRAS ROS")
+        balancedTrain.groupBy("label").count().show
+
+      case "RUS" =>
+        balancedTrain = RUS(train.select("label", "features"))
+        println("\nDISTRIBUCIÓN DE CLASES TRAS RUS")
+        balancedTrain.groupBy("label").count().show
+
+      case "ASMOTE" =>
+        // Balanceo de clases con semilla para resultados reproducibles
+        val asmote = new ASMOTE().setK(5).setPercOver(800).setSeed(1000)
+        balancedTrain = asmote.transform(train.select("label", "features"))
+        println("\nDISTRIBUCIÓN DE CLASES TRAS ASMOTE")
+        balancedTrain.groupBy("label").count().show
+    }
+    /*---------------------------------------------------------------*/
+
+    /*---------------------------------------------------------------*/
+    // ALGORITMO DE CLASIFICACIÓN
+    // Indexa las variables del dataset
+    val labelIndexer = new StringIndexer()
+      .setInputCol("label")
+      .setOutputCol("indexedLabel")
+      .fit(balancedTrain)
+    val featureIndexer = new VectorIndexer()
+      .setInputCol("features")
+      .setOutputCol("indexedFeatures")
+      .fit(balancedTrain)
+
+    // Construye el clasificador con Light Gradient Boosted Machines
+    val classifierSettings = new LightGBMClassifier()
+      .setLabelCol("indexedLabel")
+      .setFeaturesCol("indexedFeatures")
+      .setNumIterations(100)
+
+    // Traduce las etiquetas predichas al rango de valores del dataset
+    val labelConverter = new IndexToString()
+      .setInputCol("prediction")
+      .setOutputCol("predictedLabel")
+      .setLabels(labelIndexer.labels)
+
+    // Pipeline con todas las actividades
+    val pipeline = new Pipeline()
+      .setStages(Array(labelIndexer, featureIndexer, classifierSettings, labelConverter))
+
+    // Entrenamiento del modelo
+    val model = pipeline.fit(balancedTrain)
+    // Predicciones y evaluación sobre train
+    val trainPredictions = model.transform(balancedTrain).select("label", "predictedLabel")
+    println("EVALUACIÓN SOBRE TRAIN:")
+    calculateQualityMetrics(trainPredictions, "predictedLabel")
+    // Predicciones y evaluación sobre test
+    val testPredictions = model.transform(test).select("label", "predictedLabel")
+    println("EVALUACIÓN SOBRE TEST:")
+    calculateQualityMetrics(testPredictions, "predictedLabel")
+    /*---------------------------------------------------------------*/
+  }
+
+  /**
    * Función que aplica un algoritmo de preprocesamiento (ROS, RUS o SMOTE)
    * para balancear el conjunto de entrenamiento y construir un clasificador
    * utilizando el algoritmo Árboles de Decisión utilizando la libreria MLLib (RDD).
@@ -765,5 +879,12 @@ object Practica {
     applykNNISDF(trainLocalPath, testLocalPath, "RUS")
     // kNN-IS + ASMOTE
     applykNNISDF(trainLocalPath, testLocalPath, "ASMOTE")
+
+    // LightGBM + ROS
+    applyLightGBMDF(trainLocalPath, testLocalPath, "ROS")
+    // LightGBM + RUS
+    applyLightGBMDF(trainLocalPath, testLocalPath, "RUS")
+    // LightGBM + ASMOTE
+    applyLightGBMDF(trainLocalPath, testLocalPath, "ASMOTE")
   }
 }
