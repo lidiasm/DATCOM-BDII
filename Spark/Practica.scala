@@ -103,7 +103,7 @@ object Practica {
   /**
    * Función que aplica un algoritmo de preprocesamiento (ROS, RUS o ASMOTE)
    * para balancear el conjunto de entrenamiento y construir un clasificador
-   * utilizando el algoritmo Árboles de Decisión utilizando la librería ML (DataFrames).
+   * utilizando el algoritmo Árbol de Decisión utilizando la librería ML (DataFrames).
    * Finalmente se evalúa su calidad sobre los conjuntos de entrenamiento y test
    * calculando el número de muestras positivas y negativas bien clasificadas.
    * @param trainPath ruta hacia el fichero de entrenamiento
@@ -111,7 +111,7 @@ object Practica {
    * @param balAlg algoritmo de balanceo de clases a aplicar sobre el conjunto
    *               de entrenamiento desbalanceado. Opciones: ROS, RUS o ASMOTE.
    */
-  def applyDecisionTreesDF(trainPath: String, testPath: String, balAlg: String): Unit = {
+  def applyDecisionTreeDF(trainPath: String, testPath: String, balAlg: String): Unit = {
     // Inicia una nueva sesión de Spark
     val spark = SparkSession.builder()
       .master("local[4]")
@@ -182,7 +182,7 @@ object Practica {
       .setOutputCol("indexedFeatures")
       .fit(balancedTrain)
 
-    // Construye el clasificador con Árboles de Decisión
+    // Construye el clasificador con Árbol de Decisión
     val classifierSettings = new DecisionTreeClassifier()
       .setLabelCol("indexedLabel")
       .setFeaturesCol("indexedFeatures")
@@ -763,7 +763,7 @@ object Practica {
   /**
    * Función que aplica un algoritmo de preprocesamiento (ROS, RUS o SMOTE)
    * para balancear el conjunto de entrenamiento y construir un clasificador
-   * utilizando el algoritmo Árboles de Decisión utilizando la libreria MLLib (RDD).
+   * utilizando el algoritmo Árbol de Decisión utilizando la libreria MLLib (RDD).
    * Finalmente se evalúa su calidad sobre los conjuntos de entrenamiento y
    * test calculando el número de muestras positivas y negativas bien clasificadas.
    * @param trainPath ruta hacia el fichero de entrenamiento
@@ -771,7 +771,7 @@ object Practica {
    * @param balAlg algoritmo de preprocesamiento de ruido para eliminar instancias
    *               ruidosas del conjunto de entrenamiento. Opciones: HME, HTE o ENN.
    */
-  def applyDecisionTreesRDD(trainPath: String, testPath: String, balAlg: String): Unit = {
+  def applyDecisionTreeRDD(trainPath: String, testPath: String, balAlg: String): Unit = {
     // Inicia una nueva sesión de Spark
     val spark = SparkSession.builder()
       .master("local[4]")
@@ -834,7 +834,7 @@ object Practica {
 
     /*---------------------------------------------------------------*/
     // ALGORITMO DE CLASIFICACIÓN
-    // Configuración y entrenamiento de un modelo con Árboles de Decisión
+    // Configuración y entrenamiento de un modelo con Árbol de Decisión
     val numClasses = 2
     val categoricalFeaturesInfo = Map[Int, Int]() // Características continuas
     val impurity = "gini"
@@ -1291,18 +1291,18 @@ object Practica {
    * @param arg conjunto de parámetros de entrada.
    */
   def main(arg: Array[String]): Unit = {
-    // Árboles de Decisión + ROS
-    applyDecisionTreesDF(trainLocalPath, testLocalPath, "ROS")
-    // Árboles de Decisión + RUS
-    applyDecisionTreesDF(trainLocalPath, testLocalPath, "RUS")
-    // Árboles de Decisión + ASMOTE
-    applyDecisionTreesDF(trainLocalPath, testLocalPath, "ASMOTE")
-    // Árboles de Decisión + HME
-    applyDecisionTreesRDD(trainLocalPath, testLocalPath, "HME")
-    // Árboles de Decisión + HTE
-    applyDecisionTreesRDD(trainLocalPath, testLocalPath, "HTE")
-    // Árboles de Decisión + HTE
-    applyDecisionTreesRDD(trainLocalPath, testLocalPath, "ENN")
+    // Árbol de Decisión + ROS
+    applyDecisionTreeDF(trainLocalPath, testLocalPath, "ROS")
+    // Árbol de Decisión + RUS
+    applyDecisionTreeDF(trainLocalPath, testLocalPath, "RUS")
+    // Árbol de Decisión + ASMOTE
+    applyDecisionTreeDF(trainLocalPath, testLocalPath, "ASMOTE")
+    // Árbol de Decisión + HME
+    applyDecisionTreeRDD(trainLocalPath, testLocalPath, "HME")
+    // Árbol de Decisión + HTE
+    applyDecisionTreeRDD(trainLocalPath, testLocalPath, "HTE")
+    // Árbol de Decisión + HTE
+    applyDecisionTreeRDD(trainLocalPath, testLocalPath, "ENN")
 
     // Gradient-Boosted Trees + ROS
     applyGradientBoostedTreesDF(trainLocalPath, testLocalPath, "ROS")
@@ -1344,17 +1344,17 @@ object Practica {
     applyLogisticRegressionRDD(trainLocalPath, testLocalPath, "ENN")
 
     // kNN-IS + ROS
-    applykNNISDF(train10kLocalPath, test10kLocalPath, "ROS")
+    applykNNISDF(trainClusterPath, testClusterPath, "ROS")
     // kNN-IS + RUS
-    applykNNISDF(trainLocalPath, testLocalPath, "RUS")
+    applykNNISDF(trainClusterPath, testClusterPath, "RUS")
     // kNN-IS + ASMOTE
-    applykNNISDF(trainLocalPath, testLocalPath, "ASMOTE")
+    applykNNISDF(trainClusterPath, testClusterPath, "ASMOTE")
     // kNN-IS + HME
-    applykNNISRDD(trainLocalPath, testLocalPath, "HME")
+    applykNNISRDD(trainClusterPath, testClusterPath, "HME")
     // kNN-IS + HTE
-    applykNNISDF(trainLocalPath, testLocalPath, "HTE")
+    applykNNISDF(trainClusterPath, testClusterPath, "HTE")
     // kNN-IS + ENN
-    applykNNISDF(trainLocalPath, testLocalPath, "ENN")
+    applykNNISDF(trainClusterPath, testClusterPath, "ENN")
 
     // LightGBM + ROS
     applyLightGBMDF(trainLocalPath, testLocalPath, "ROS")
