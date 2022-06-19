@@ -10,5 +10,7 @@ lazy val root = (project in file("."))
     libraryDependencies += "org.apache.spark" %% "spark-sql" % "3.2.1",
     libraryDependencies += "org.apache.spark" %% "spark-mllib" % "3.2.1",
     libraryDependencies += "org.apache.spark" %% "spark-core" % "3.2.1",
-    libraryDependencies += "mjuez" % "approx-smote" % "1.1.2"
+    libraryDependencies += "mjuez" % "approx-smote" % "1.1.2",
+    libraryDependencies += "com.microsoft.azure" % "synapseml_2.12" % "0.9.5",
+    libraryDependencies += "com.nvidia" % "xgboost4j-spark_3.0" % "1.4.2-0.2.0"
   )
