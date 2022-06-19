@@ -1,9 +1,9 @@
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.DataFrame
-import org.apache.spark.ml.feature.{IndexToString, MinMaxScaler, StringIndexer, VectorAssembler, VectorIndexer}
+import org.apache.spark.ml.feature.{IndexToString, StringIndexer, VectorAssembler, VectorIndexer}
 import org.apache.spark.ml.Pipeline
 import org.apache.spark.ml.instance.ASMOTE
-import org.apache.spark.ml.classification.{DecisionTreeClassifier, RandomForestClassifier, GBTClassifier, FMClassifier, LogisticRegression}
+import org.apache.spark.ml.classification.{DecisionTreeClassifier, RandomForestClassifier, GBTClassifier, LogisticRegression}
 import org.apache.spark.ml.classification.kNN_IS.kNN_ISClassifier
 import com.microsoft.azure.synapse.ml.lightgbm.LightGBMClassifier
 
@@ -11,7 +11,10 @@ import org.apache.spark.mllib.feature._
 import org.apache.spark.rdd.RDD
 import org.apache.spark.mllib.linalg.Vectors
 import org.apache.spark.mllib.regression.LabeledPoint
-import org.apache.spark.mllib.tree.DecisionTree
+import org.apache.spark.mllib.tree.configuration.BoostingStrategy
+import org.apache.spark.mllib.tree.{DecisionTree, GradientBoostedTrees, RandomForest}
+import org.apache.spark.mllib.classification.{LogisticRegressionWithLBFGS}
+import org.apache.spark.mllib.classification.kNN_IS.kNN_IS
 
 
 object Practica {
@@ -813,8 +816,18 @@ object Practica {
     /*---------------------------------------------------------------*/
     // ALGORITMO DE CLASIFICACIÓN
     // Configuración y entrenamiento de un modelo con Árboles de Decisión
-    val model = DecisionTree.trainClassifier(balancedTrain, 2, Map[Int, Int](),
-      "gini", 10, 32)
+    val numClasses = 2
+    val categoricalFeaturesInfo = Map[Int, Int]() // Características continuas
+    val impurity = "gini"
+    val maxDepth = 5
+    val maxBins = 32
+    val model = DecisionTree.trainClassifier(balancedTrain,
+      numClasses,
+      categoricalFeaturesInfo,
+      impurity,
+      maxDepth,
+      maxBins)
+
     // Predicciones y evaluación sobre entrenamiento
     val trainPredictions = balancedTrain.map { point =>
       val prediction = model.predict(point.features)
@@ -827,6 +840,362 @@ object Practica {
       val prediction = model.predict(point.features)
       (point.label, prediction)
     }
+    println("TP = " + testPredictions.filter(r => r._1 == r._2 && r._1 == 1).count())
+    println("TN = " + testPredictions.filter(r => r._1 == r._2 && r._1 == 0).count())
+    /*---------------------------------------------------------------*/
+  }
+
+  /**
+   * Función que aplica un algoritmo de preprocesamiento (ROS, RUS o SMOTE)
+   * para balancear el conjunto de entrenamiento y construir un clasificador
+   * utilizando el algoritmo Gradient-Boosted Trees utilizando la libreria MLLib (RDD).
+   * Finalmente se evalúa su calidad sobre los conjuntos de entrenamiento y
+   * test calculando el número de muestras positivas y negativas bien clasificadas.
+   * @param trainPath ruta hacia el fichero de entrenamiento
+   * @param testPath ruta hacia el fichero de test
+   * @param balAlg algoritmo de preprocesamiento de ruido para eliminar instancias
+   *               ruidosas del conjunto de entrenamiento. Opciones: HME, HTE o ENN.
+   */
+  def applyGradientBoostedTreesRDD(trainPath: String, testPath: String, balAlg: String): Unit = {
+    // Inicia una nueva sesión de Spark
+    val spark = SparkSession.builder()
+      .master("local[4]")
+      .appName("SparkApp")
+      .getOrCreate()
+
+    // Lectura del conjunto de entrenamiento como RDD
+    val rddTrain = spark.sparkContext.textFile(trainPath).map { line =>
+      val featureVector = Vectors.dense(line.split(",").map(f => f.toDouble).init)
+      val label = line.split(",").map(f => f.toDouble).last
+      LabeledPoint(label, featureVector)
+    }.persist
+
+    // Lectura del conjunto de test como RDD
+    val rddTest = spark.sparkContext.textFile(testPath).map { line =>
+      val featureVector = Vectors.dense(line.split(",").map(f => f.toDouble).init)
+      val label = line.split(",").map(f => f.toDouble).last
+      LabeledPoint(label, featureVector)
+    }.persist
+
+    /*---------------------------------------------------------------*/
+    // ALGORITMO DE BALANCEADO DE CLASES
+    // Almacena el dataframe balanceado resultante
+    var balancedTrain: RDD[LabeledPoint] = null
+    // Aplica el algoritmo de balanceo de clases seleccionado
+    balAlg match {
+      case "HME" =>
+        balancedTrain = new HME_BD(rddTrain, 100, 4, 10, 1000).runFilter()
+        println("\nDISTRIBUCIÓN DE CLASES TRAS HME")
+
+      case "HTE" =>
+        balancedTrain = new HTE_BD(rddTrain, 100, 4, 0, 3, 10, 1000).runFilter()
+        println("\nDISTRIBUCIÓN DE CLASES TRAS HTE")
+
+      case "ENN" =>
+        balancedTrain = new ENN_BD(rddTrain, 3).runFilter()
+        println("\nDISTRIBUCIÓN DE CLASES TRAS ENN")
+    }
+    // Convierte el RDD a Dataframe para observar el balanceo de clases
+    import spark.implicits._
+    val balancedTrainDF = balancedTrain.map(e => (e.label, e.features)).toDF("label", "features")
+    balancedTrainDF.groupBy("label").count().show
+    /*---------------------------------------------------------------*/
+
+    /*---------------------------------------------------------------*/
+    // ALGORITMO DE CLASIFICACIÓN
+    // Configuración de un modelo con Gradient-Boosted Trees
+    val boostingStrategy = BoostingStrategy.defaultParams("Classification")
+      boostingStrategy.treeStrategy.numClasses = 2
+      boostingStrategy.treeStrategy.maxDepth = 5
+      boostingStrategy.treeStrategy.categoricalFeaturesInfo = Map[Int, Int]()
+    // Entrenamiento de un clasificador
+    val model = GradientBoostedTrees.train(balancedTrain, boostingStrategy)
+
+    // Predicciones y evaluación sobre entrenamiento
+    val trainPredictions = balancedTrain.map { point =>
+      val prediction = model.predict(point.features)
+      (point.label, prediction)
+    }
+    println("TP = " + trainPredictions.filter(r => r._1 == r._2 && r._1 == 1).count())
+    println("TN = " + trainPredictions.filter(r => r._1 == r._2 && r._1 == 0).count())
+    // Predicciones y evaluación sobre test
+    val testPredictions = rddTest.map { point =>
+      val prediction = model.predict(point.features)
+      (point.label, prediction)
+    }
+    println("TP = " + testPredictions.filter(r => r._1 == r._2 && r._1 == 1).count())
+    println("TN = " + testPredictions.filter(r => r._1 == r._2 && r._1 == 0).count())
+    /*---------------------------------------------------------------*/
+  }
+
+  /**
+   * Función que aplica un algoritmo de preprocesamiento (ROS, RUS o SMOTE)
+   * para balancear el conjunto de entrenamiento y construir un clasificador
+   * utilizando el algoritmo Random Forest utilizando la libreria MLLib (RDD).
+   * Finalmente se evalúa su calidad sobre los conjuntos de entrenamiento y
+   * test calculando el número de muestras positivas y negativas bien clasificadas.
+   * @param trainPath ruta hacia el fichero de entrenamiento
+   * @param testPath ruta hacia el fichero de test
+   * @param balAlg algoritmo de preprocesamiento de ruido para eliminar instancias
+   *               ruidosas del conjunto de entrenamiento. Opciones: HME, HTE o ENN.
+   */
+  def applyRandomForestRDD(trainPath: String, testPath: String, balAlg: String): Unit = {
+    // Inicia una nueva sesión de Spark
+    val spark = SparkSession.builder()
+      .master("local[4]")
+      .appName("SparkApp")
+      .getOrCreate()
+
+    // Lectura del conjunto de entrenamiento como RDD
+    val rddTrain = spark.sparkContext.textFile(trainPath).map { line =>
+      val featureVector = Vectors.dense(line.split(",").map(f => f.toDouble).init)
+      val label = line.split(",").map(f => f.toDouble).last
+      LabeledPoint(label, featureVector)
+    }.persist
+
+    // Lectura del conjunto de test como RDD
+    val rddTest = spark.sparkContext.textFile(testPath).map { line =>
+      val featureVector = Vectors.dense(line.split(",").map(f => f.toDouble).init)
+      val label = line.split(",").map(f => f.toDouble).last
+      LabeledPoint(label, featureVector)
+    }.persist
+
+    /*---------------------------------------------------------------*/
+    // ALGORITMO DE BALANCEADO DE CLASES
+    // Almacena el dataframe balanceado resultante
+    var balancedTrain: RDD[LabeledPoint] = null
+    // Aplica el algoritmo de balanceo de clases seleccionado
+    balAlg match {
+      case "HME" =>
+        balancedTrain = new HME_BD(rddTrain, 100, 4, 10, 1000).runFilter()
+        println("\nDISTRIBUCIÓN DE CLASES TRAS HME")
+
+      case "HTE" =>
+        balancedTrain = new HTE_BD(rddTrain, 100, 4, 0, 3, 10, 1000).runFilter()
+        println("\nDISTRIBUCIÓN DE CLASES TRAS HTE")
+
+      case "ENN" =>
+        balancedTrain = new ENN_BD(rddTrain, 3).runFilter()
+        println("\nDISTRIBUCIÓN DE CLASES TRAS ENN")
+    }
+    // Convierte el RDD a Dataframe para observar el balanceo de clases
+    import spark.implicits._
+    val balancedTrainDF = balancedTrain.map(e => (e.label, e.features)).toDF("label", "features")
+    balancedTrainDF.groupBy("label").count().show
+    /*---------------------------------------------------------------*/
+
+    /*---------------------------------------------------------------*/
+    // ALGORITMO DE CLASIFICACIÓN
+    // Configuración y entrenamiento de un modelo con Random Forest
+    val numClasses = 2
+    val categoricalFeaturesInfo = Map[Int, Int]() // Variables continuas
+    val numTrees = 100
+    val featureSubsetStrategy = "auto" // El algoritmo decide la estrategia automáticamente
+    val impurity = "gini"
+    val maxDepth = 10
+    val maxBins = 32
+    val model = RandomForest.trainClassifier(balancedTrain,
+      numClasses,
+      categoricalFeaturesInfo,
+      numTrees,
+      featureSubsetStrategy,
+      impurity,
+      maxDepth,
+      maxBins)
+
+    // Predicciones y evaluación sobre entrenamiento
+    val trainPredictions = balancedTrain.map { point =>
+      val prediction = model.predict(point.features)
+      (point.label, prediction)
+    }
+    println("TP = " + trainPredictions.filter(r => r._1 == r._2 && r._1 == 1).count())
+    println("TN = " + trainPredictions.filter(r => r._1 == r._2 && r._1 == 0).count())
+    // Predicciones y evaluación sobre test
+    val testPredictions = rddTest.map { point =>
+      val prediction = model.predict(point.features)
+      (point.label, prediction)
+    }
+    println("TP = " + testPredictions.filter(r => r._1 == r._2 && r._1 == 1).count())
+    println("TN = " + testPredictions.filter(r => r._1 == r._2 && r._1 == 0).count())
+    /*---------------------------------------------------------------*/
+  }
+
+  /**
+   * Función que aplica un algoritmo de preprocesamiento (ROS, RUS o SMOTE)
+   * para balancear el conjunto de entrenamiento y construir un clasificador
+   * utilizando el algoritmo Regresión Logística utilizando la libreria MLLib (RDD).
+   * Finalmente se evalúa su calidad sobre los conjuntos de entrenamiento y
+   * test calculando el número de muestras positivas y negativas bien clasificadas.
+   * @param trainPath ruta hacia el fichero de entrenamiento
+   * @param testPath ruta hacia el fichero de test
+   * @param balAlg algoritmo de preprocesamiento de ruido para eliminar instancias
+   *               ruidosas del conjunto de entrenamiento. Opciones: HME, HTE o ENN.
+   */
+  def applyLogisticRegressionRDD(trainPath: String, testPath: String, balAlg: String): Unit = {
+    // Inicia una nueva sesión de Spark
+    val spark = SparkSession.builder()
+      .master("local[4]")
+      .appName("SparkApp")
+      .getOrCreate()
+
+    // Lectura del conjunto de entrenamiento como RDD
+    val rddTrain = spark.sparkContext.textFile(trainPath).map { line =>
+      val featureVector = Vectors.dense(line.split(",").map(f => f.toDouble).init)
+      val label = line.split(",").map(f => f.toDouble).last
+      LabeledPoint(label, featureVector)
+    }.persist
+
+    // Lectura del conjunto de test como RDD
+    val rddTest = spark.sparkContext.textFile(testPath).map { line =>
+      val featureVector = Vectors.dense(line.split(",").map(f => f.toDouble).init)
+      val label = line.split(",").map(f => f.toDouble).last
+      LabeledPoint(label, featureVector)
+    }.persist
+
+    /*---------------------------------------------------------------*/
+    // ALGORITMO DE BALANCEADO DE CLASES
+    // Almacena el dataframe balanceado resultante
+    var balancedTrain: RDD[LabeledPoint] = null
+    // Aplica el algoritmo de balanceo de clases seleccionado
+    balAlg match {
+      case "HME" =>
+        balancedTrain = new HME_BD(rddTrain, 100, 4, 10, 1000).runFilter()
+        println("\nDISTRIBUCIÓN DE CLASES TRAS HME")
+
+      case "HTE" =>
+        balancedTrain = new HTE_BD(rddTrain, 100, 4, 0, 3, 10, 1000).runFilter()
+        println("\nDISTRIBUCIÓN DE CLASES TRAS HTE")
+
+      case "ENN" =>
+        balancedTrain = new ENN_BD(rddTrain, 3).runFilter()
+        println("\nDISTRIBUCIÓN DE CLASES TRAS ENN")
+    }
+    // Convierte el RDD a Dataframe para observar el balanceo de clases
+    import spark.implicits._
+    val balancedTrainDF = balancedTrain.map(e => (e.label, e.features)).toDF("label", "features")
+    balancedTrainDF.groupBy("label").count().show
+    /*---------------------------------------------------------------*/
+
+    /*---------------------------------------------------------------*/
+    // ALGORITMO DE CLASIFICACIÓN
+    // Configuración y entrenamiento de un modelo con Regresión Logística
+    val model = new LogisticRegressionWithLBFGS()
+      .setNumClasses(2)
+      .run(balancedTrain)
+
+    // Predicciones y evaluación sobre entrenamiento
+    val trainPredictions = balancedTrain.map { point =>
+      val prediction = model.predict(point.features)
+      (point.label, prediction)
+    }
+    println("TP = " + trainPredictions.filter(r => r._1 == r._2 && r._1 == 1).count())
+    println("TN = " + trainPredictions.filter(r => r._1 == r._2 && r._1 == 0).count())
+    // Predicciones y evaluación sobre test
+    val testPredictions = rddTest.map { point =>
+      val prediction = model.predict(point.features)
+      (point.label, prediction)
+    }
+    println("TP = " + testPredictions.filter(r => r._1 == r._2 && r._1 == 1).count())
+    println("TN = " + testPredictions.filter(r => r._1 == r._2 && r._1 == 0).count())
+    /*---------------------------------------------------------------*/
+  }
+
+  /**
+   * Función que aplica un algoritmo de preprocesamiento (HME, HTE o ENN)
+   * para balancear el conjunto de entrenamiento y construir un clasificador
+   * utilizando el algoritmo k-Nearest Neighbors Iterative Spark-based
+   * haciendo referencia a la librería ML (DataFrames). Finalmente se evalúa su
+   * calidad sobre los conjuntos de entrenamiento y test calculando el número
+   * de muestras positivas y negativas bien clasificadas.
+   * @param trainPath ruta hacia el fichero de entrenamiento
+   * @param testPath ruta hacia el fichero de test
+   * @param balAlg algoritmo de balanceo de clases a aplicar sobre el conjunto
+   *               de entrenamiento desbalanceado. Opciones: HME, HTE o ENN.
+   */
+  def applykNNISRDD(trainPath: String, testPath: String, balAlg: String): Unit = {
+    // Inicia una nueva sesión de Spark
+    val spark = SparkSession.builder()
+      .master("local[4]")
+      .appName("SparkApp")
+      .getOrCreate()
+
+    // Lectura del conjunto de entrenamiento como RDD
+    val rddTrain = spark.sparkContext.textFile(trainPath).map { line =>
+      val featureVector = Vectors.dense(line.split(",").map(f => f.toDouble).init)
+      val label = line.split(",").map(f => f.toDouble).last
+      LabeledPoint(label, featureVector)
+    }.persist
+
+    // Lectura del conjunto de test como RDD
+    val rddTest = spark.sparkContext.textFile(testPath).map { line =>
+      val featureVector = Vectors.dense(line.split(",").map(f => f.toDouble).init)
+      val label = line.split(",").map(f => f.toDouble).last
+      LabeledPoint(label, featureVector)
+    }.persist
+
+    /*---------------------------------------------------------------*/
+    // ALGORITMO DE BALANCEADO DE CLASES
+    // Almacena el dataframe balanceado resultante
+    var balancedTrain: RDD[LabeledPoint] = null
+    // Aplica el algoritmo de balanceo de clases seleccionado
+    balAlg match {
+      case "HME" =>
+        balancedTrain = new HME_BD(rddTrain, 100, 4, 10, 1000).runFilter()
+        println("\nDISTRIBUCIÓN DE CLASES TRAS HME")
+
+      case "HTE" =>
+        balancedTrain = new HTE_BD(rddTrain, 100, 4, 0, 3, 10, 1000).runFilter()
+        println("\nDISTRIBUCIÓN DE CLASES TRAS HTE")
+
+      case "ENN" =>
+        balancedTrain = new ENN_BD(rddTrain, 3).runFilter()
+        println("\nDISTRIBUCIÓN DE CLASES TRAS ENN")
+    }
+    // Convierte el RDD a Dataframe para observar el balanceo de clases
+    import spark.implicits._
+    val balancedTrainDF = balancedTrain.map(e => (e.label, e.features)).toDF("label", "features")
+    balancedTrainDF.groupBy("label").count().show
+    /*---------------------------------------------------------------*/
+
+    /*---------------------------------------------------------------*/
+    // ALGORITMO DE CLASIFICACIÓN
+    // Configuración y entrenamiento de un modelo con kNN-IS
+    val k = 3
+    val distanceType = 2
+    val numClass = 2
+    val numFeatures = balancedTrainDF.columns.size-1
+    val numPartitionMap = 15
+    val numReduces = 15
+    val numIterations = 10
+    val maxWeight = 1
+    var model = kNN_IS.setup(balancedTrain,
+      balancedTrain,
+      k,
+      distanceType,
+      numClass,
+      numFeatures,
+      numPartitionMap,
+      numReduces,
+      numIterations,
+      maxWeight)
+    // Predicciones y evaluación sobre entrenamiento
+    val trainPredictions = model.predict(spark.sparkContext)
+    println("TP = " + trainPredictions.filter(r => r._1 == r._2 && r._1 == 1).count())
+    println("TN = " + trainPredictions.filter(r => r._1 == r._2 && r._1 == 0).count())
+
+    // Entrenamiento de un segundo modelo para evaluar sobre test
+    model = kNN_IS.setup(balancedTrain,
+      rddTest,
+      k,
+      distanceType,
+      numClass,
+      numFeatures,
+      numPartitionMap,
+      numReduces,
+      numIterations,
+      maxWeight)
+    // Predicciones y evaluación sobre test
+    val testPredictions = model.predict(spark.sparkContext)
     println("TP = " + testPredictions.filter(r => r._1 == r._2 && r._1 == 1).count())
     println("TN = " + testPredictions.filter(r => r._1 == r._2 && r._1 == 0).count())
     /*---------------------------------------------------------------*/
@@ -848,16 +1217,9 @@ object Practica {
     // Árboles de Decisión + HME
     applyDecisionTreesRDD(trainLocalPath, testLocalPath, "HME")
     // Árboles de Decisión + HTE
-    applyDecisionTreesRDD(train10kLocalPath, test10kLocalPath, "HTE")
+    applyDecisionTreesRDD(trainLocalPath, testLocalPath, "HTE")
     // Árboles de Decisión + HTE
-    applyDecisionTreesRDD(train10kLocalPath, test10kLocalPath, "ENN")
-
-    // Random Forest + ROS
-    applyRandomForestDF(trainLocalPath, testLocalPath, "ROS")
-    // Random Forest + RUS
-    applyRandomForestDF(trainLocalPath, testLocalPath, "RUS")
-    // Random Forest + ASMOTE
-    applyRandomForestDF(trainLocalPath, testLocalPath, "ASMOTE")
+    applyDecisionTreesRDD(trainLocalPath, testLocalPath, "ENN")
 
     // Gradient-Boosted Trees + ROS
     applyGradientBoostedTreesDF(trainLocalPath, testLocalPath, "ROS")
@@ -865,6 +1227,25 @@ object Practica {
     applyGradientBoostedTreesDF(trainLocalPath, testLocalPath, "RUS")
     // Gradient-Boosted Trees + ASMOTE
     applyGradientBoostedTreesDF(trainLocalPath, testLocalPath, "ASMOTE")
+    // Gradient-Boosted Trees + HME
+    applyGradientBoostedTreesRDD(trainLocalPath, testLocalPath, "HME")
+    // Gradient-Boosted Trees + HTE
+    applyGradientBoostedTreesRDD(trainLocalPath, testLocalPath, "HTE")
+    // Gradient-Boosted Trees + HTE
+    applyGradientBoostedTreesRDD(trainLocalPath, testLocalPath, "ENN")
+
+    // Random Forest + ROS
+    applyRandomForestDF(trainLocalPath, testLocalPath, "ROS")
+    // Random Forest + RUS
+    applyRandomForestDF(trainLocalPath, testLocalPath, "RUS")
+    // Random Forest + ASMOTE
+    applyRandomForestDF(trainLocalPath, testLocalPath, "ASMOTE")
+    // Random Forest + HME
+    applyRandomForestRDD(trainLocalPath, testLocalPath, "HME")
+    // Random Forest + HTE
+    applyRandomForestRDD(trainLocalPath, testLocalPath, "HTE")
+    // Random Forest + HTE
+    applyRandomForestRDD(trainLocalPath, testLocalPath, "ENN")
 
     // Regresión Logística Binomial + ROS
     applyLogisticRegressionDF(trainLocalPath, testLocalPath, "ROS")
@@ -872,6 +1253,12 @@ object Practica {
     applyLogisticRegressionDF(trainLocalPath, testLocalPath, "RUS")
     // Regresión Logística Binomial + ASMOTE
     applyLogisticRegressionDF(trainLocalPath, testLocalPath, "ASMOTE")
+    // Regresión Logística Binomial + HME
+    applyLogisticRegressionRDD(trainLocalPath, testLocalPath, "HME")
+    // Regresión Logística Binomial + HTE
+    applyLogisticRegressionRDD(trainLocalPath, testLocalPath, "HTE")
+    // Regresión Logística Binomial + HTE
+    applyLogisticRegressionRDD(trainLocalPath, testLocalPath, "ENN")
 
     // kNN-IS + ROS
     applykNNISDF(train10kLocalPath, test10kLocalPath, "ROS")
@@ -879,6 +1266,12 @@ object Practica {
     applykNNISDF(trainLocalPath, testLocalPath, "RUS")
     // kNN-IS + ASMOTE
     applykNNISDF(trainLocalPath, testLocalPath, "ASMOTE")
+    // kNN-IS + HME
+    applykNNISRDD(trainLocalPath, testLocalPath, "HME")
+    // kNN-IS + HTE
+    applykNNISDF(trainLocalPath, testLocalPath, "HTE")
+    // kNN-IS + ENN
+    applykNNISDF(trainLocalPath, testLocalPath, "ENN")
 
     // LightGBM + ROS
     applyLightGBMDF(trainLocalPath, testLocalPath, "ROS")
