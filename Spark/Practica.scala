@@ -515,7 +515,7 @@ object Practica {
     // Construye el clasificador con Regresión Logística Binomial
     val classifierSettings = new LogisticRegression()
       .setFamily("binomial")
-      .setMaxIter(10)
+      .setElasticNetParam(0)
       .setLabelCol("indexedLabel")
       .setFeaturesCol("indexedFeatures")
 
@@ -942,6 +942,7 @@ object Practica {
     val boostingStrategy = BoostingStrategy.defaultParams("Classification")
       boostingStrategy.treeStrategy.numClasses = 2
       boostingStrategy.treeStrategy.maxDepth = 5
+      boostingStrategy.treeStrategy.maxBins = 32
       boostingStrategy.treeStrategy.categoricalFeaturesInfo = Map[Int, Int]()
     // Entrenamiento de un clasificador
     val model = GradientBoostedTrees.train(balancedTrain, boostingStrategy)
@@ -1040,10 +1041,10 @@ object Practica {
     // Configuración y entrenamiento de un modelo con Random Forest
     val numClasses = 2
     val categoricalFeaturesInfo = Map[Int, Int]() // Variables continuas
-    val numTrees = 100
+    val numTrees = 20
     val featureSubsetStrategy = "auto" // El algoritmo decide la estrategia automáticamente
     val impurity = "gini"
-    val maxDepth = 10
+    val maxDepth = 5
     val maxBins = 32
     val model = RandomForest.trainClassifier(balancedTrain,
       numClasses,
@@ -1210,6 +1211,7 @@ object Practica {
     val maxBalDepth = 10
     val voting = 0
     val BalK = 3
+
     // Aplica el algoritmo de balanceo de clases seleccionado
     balAlg match {
       case "HME" =>
@@ -1249,7 +1251,7 @@ object Practica {
     val numFeatures = balancedTrainDF.columns.size-1
     val numPartitionMap = 15
     val numReduces = 15
-    val numIterations = 10
+    val numIterations = 100
     val maxWeight = 1
     var model = kNN_IS.setup(balancedTrain,
       balancedTrain,
@@ -1291,6 +1293,7 @@ object Practica {
    * @param arg conjunto de parámetros de entrada.
    */
   def main(arg: Array[String]): Unit = {
+
     // Árbol de Decisión + ROS
     applyDecisionTreeDF(trainLocalPath, testLocalPath, "ROS")
     // Árbol de Decisión + RUS
@@ -1344,17 +1347,17 @@ object Practica {
     applyLogisticRegressionRDD(trainLocalPath, testLocalPath, "ENN")
 
     // kNN-IS + ROS
-    applykNNISDF(trainClusterPath, testClusterPath, "ROS")
+    applykNNISDF(trainLocalPath, testLocalPath, "ROS")
     // kNN-IS + RUS
-    applykNNISDF(trainClusterPath, testClusterPath, "RUS")
+    applykNNISDF(trainLocalPath, testLocalPath, "RUS")
     // kNN-IS + ASMOTE
-    applykNNISDF(trainClusterPath, testClusterPath, "ASMOTE")
+    applykNNISDF(trainLocalPath, testLocalPath, "ASMOTE")
     // kNN-IS + HME
-    applykNNISRDD(trainClusterPath, testClusterPath, "HME")
+    applykNNISRDD(trainLocalPath, testLocalPath, "HME")
     // kNN-IS + HTE
-    applykNNISDF(trainClusterPath, testClusterPath, "HTE")
+    applykNNISDF(trainLocalPath, testLocalPath, "HTE")
     // kNN-IS + ENN
-    applykNNISDF(trainClusterPath, testClusterPath, "ENN")
+    applykNNISDF(trainLocalPath, testLocalPath, "ENN")
 
     // LightGBM + ROS
     applyLightGBMDF(trainLocalPath, testLocalPath, "ROS")
