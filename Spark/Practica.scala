@@ -625,8 +625,8 @@ object Practica {
       .setDistanceType(2)
       .setNumClass(2)
       .setNumFeatures(balancedTrain.columns.size-1)
-      .setNumPartitionMap(15)
-      .setNumReduces(15)
+      .setNumPartitionMap(1000)
+      .setNumReduces(300)
       .setNumIter(10)
       .setMaxWeight(1)
       .setNumSamplesTest(test.count.toInt)
@@ -1249,8 +1249,8 @@ object Practica {
     val distanceType = 2
     val numClass = 2
     val numFeatures = balancedTrainDF.columns.size-1
-    val numPartitionMap = 15
-    val numReduces = 15
+    val numPartitionMap = 1000
+    val numReduces = 300
     val numIterations = 100
     val maxWeight = 1
     var model = kNN_IS.setup(balancedTrain,
