@@ -1355,9 +1355,9 @@ object Practica {
     // kNN-IS + HME
     applykNNISRDD(trainLocalPath, testLocalPath, "HME")
     // kNN-IS + HTE
-    applykNNISDF(trainLocalPath, testLocalPath, "HTE")
+    applykNNISRDD(trainLocalPath, testLocalPath, "HTE")
     // kNN-IS + ENN
-    applykNNISDF(trainLocalPath, testLocalPath, "ENN")
+    applykNNISRDD(trainLocalPath, testLocalPath, "ENN")
 
     // LightGBM + ROS
     applyLightGBMDF(trainLocalPath, testLocalPath, "ROS")
